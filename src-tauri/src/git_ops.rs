@@ -95,21 +95,27 @@ pub async fn git_push(path: String) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn git_modified_files(path: String) -> Result<Vec<String>, String> {
+    // Use -z to get NUL-separated output so filenames with spaces/quotes are never quoted
     let output = Command::new("git")
         .arg("-C")
         .arg(&path)
         .arg("status")
         .arg("--porcelain")
+        .arg("-z")
         .output()
         .map_err(|e| e.to_string())?;
 
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut files = Vec::new();
-        for line in stdout.lines() {
-            if line.len() > 3 {
-                let file = line[3..].to_string();
-                files.push(file);
+        // -z format: "XY filename\0" (no newlines, NUL-terminated entries)
+        for entry in stdout.split('\0') {
+            if entry.len() > 3 {
+                // entry[0..2] = XY status, entry[2] = space, entry[3..] = filename
+                let file = entry[3..].to_string();
+                if !file.is_empty() {
+                    files.push(file);
+                }
             }
         }
         Ok(files)
@@ -120,21 +126,56 @@ pub async fn git_modified_files(path: String) -> Result<Vec<String>, String> {
 
 #[tauri::command]
 pub async fn git_diff(path: String, file_path: String) -> Result<String, String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(&path)
-        .arg("diff")
-        .arg("HEAD")
-        .arg("--")
-        .arg(&file_path)
+    // Strategy: try all diff variants in order and return the first non-empty result.
+    // This avoids any status parsing (which breaks on filenames with spaces/quotes).
+
+    // 1. Staged changes (index vs HEAD) — covers `git add`-ed files
+    let staged = Command::new("git")
+        .arg("-C").arg(&path)
+        .arg("diff").arg("--cached").arg("HEAD")
+        .arg("--").arg(&file_path)
         .output()
         .map_err(|e| e.to_string())?;
+    let staged_text = String::from_utf8_lossy(&staged.stdout).to_string();
 
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    // 2. Unstaged changes (working tree vs index)
+    let worktree = Command::new("git")
+        .arg("-C").arg(&path)
+        .arg("diff")
+        .arg("--").arg(&file_path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    let worktree_text = String::from_utf8_lossy(&worktree.stdout).to_string();
+
+    // Combine: staged first, then any additional unstaged changes
+    let mut result = String::new();
+    if !staged_text.trim().is_empty() {
+        result.push_str(&staged_text);
     }
+    if !worktree_text.trim().is_empty() {
+        result.push_str(&worktree_text);
+    }
+
+    // 3. If still empty, the file may be untracked — show full file as additions
+    if result.trim().is_empty() {
+        let full_path = std::path::Path::new(&path).join(&file_path);
+        if full_path.exists() {
+            let content = std::fs::read_to_string(&full_path).unwrap_or_default();
+            let line_count = content.lines().count();
+            let mut diff = format!(
+                "--- /dev/null\n+++ b/{}\n@@ -0,0 +1,{} @@\n",
+                file_path, line_count
+            );
+            for line in content.lines() {
+                diff.push('+');
+                diff.push_str(line);
+                diff.push('\n');
+            }
+            return Ok(diff);
+        }
+    }
+
+    Ok(result)
 }
 
 
@@ -272,17 +313,38 @@ pub async fn git_merge(path: String, branch: String, strategy: String) -> Result
 }
 
 #[tauri::command]
+pub async fn git_head_oid(path: String) -> Result<String, String> {
+    // Returns the full SHA of HEAD, plus the current branch name separated by ~|~
+    // e.g. "abc123def456...~|~main" or "abc123def456...~|~HEAD" (detached)
+    let sha_out = Command::new("git")
+        .arg("-C").arg(&path)
+        .arg("rev-parse").arg("HEAD")
+        .output()
+        .map_err(|e| e.to_string())?;
+    let sha = String::from_utf8_lossy(&sha_out.stdout).trim().to_string();
+
+    let branch_out = Command::new("git")
+        .arg("-C").arg(&path)
+        .arg("rev-parse").arg("--abbrev-ref").arg("HEAD")
+        .output()
+        .map_err(|e| e.to_string())?;
+    let branch = String::from_utf8_lossy(&branch_out.stdout).trim().to_string();
+
+    Ok(format!("{}~|~{}", sha, branch))
+}
+
+#[tauri::command]
 pub async fn git_log_graph(path: String) -> Result<Vec<String>, String> {
-    // format: %h~|~%p~|~%s~|~%an~|~%ar~|~%d
+    // format: %H~|~%P~|~%s~|~%an~|~%ar~|~%d  (full hashes so HEAD matching is unambiguous)
     let output = Command::new("git")
         .arg("-C")
         .arg(&path)
         .arg("log")
         .arg("--all")
-        .arg("--pretty=format:%h~|~%p~|~%s~|~%an~|~%ar~|~%d")
+        .arg("--pretty=format:%H~|~%P~|~%s~|~%an~|~%ar~|~%d~|~%ae")
         .arg("--color=never")
         .arg("-n")
-        .arg("100") // Limiting to 100 commits for performance with custom graphs
+        .arg("200")
         .output()
         .map_err(|e| e.to_string())?;
 

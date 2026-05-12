@@ -46,6 +46,16 @@ fn unwatch_repo(app: AppHandle, path: String) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            #[cfg(target_os = "macos")]
+            {
+                use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
+                let window = app.get_webview_window("main").unwrap();
+                apply_vibrancy(&window, NSVisualEffectMaterial::HudWindow, None, None)
+                    .expect("Unsupported platform! 'apply_vibrancy' is only supported on macOS");
+            }
+            Ok(())
+        })
         .manage(WatcherState(Mutex::new(HashMap::new())))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -65,6 +75,7 @@ pub fn run() {
             git_ops::git_delete_branch,
             git_ops::git_rebase,
             git_ops::git_merge,
+            git_ops::git_head_oid,
             git_ops::git_log_graph
         ])
         .run(tauri::generate_context!())
