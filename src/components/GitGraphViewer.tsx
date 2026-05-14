@@ -1,4 +1,4 @@
-import { useMemo, useRef, useEffect } from "react";
+import React, { useMemo, useRef } from "react";
 
 interface GitGraphViewerProps {
   logs: string[];
@@ -19,18 +19,22 @@ interface Commit {
 interface CommitRow extends Commit {
   col: number;
   color: string;
-  // active lanes AFTER this commit is processed: lane[col] = hash it's heading to
   lanesAfter: (string | null)[];
   laneColors: string[];
 }
 
 const COLORS = [
   "#0A84FF", "#30D158", "#FF9F0A", "#BF5AF2",
-  "#FF375F", "#64D2FF", "#FFD60A", "#FF2D55",
+  "#FF375F", "#64D2FF", "#FF6B35", "#FF2D55",
 ];
-const ROW_H = 56;
+const ROW_H = 48;
 const COL_W = 20;
 const DOT_R = 4;
+
+// ── Column widths ──
+const HASH_W = 72;
+const AUTHOR_W = 180;
+const REFS_W = 220;
 
 function parseLog(logs: string[]): Commit[] {
   return logs.flatMap(line => {
@@ -48,24 +52,24 @@ function parseLog(logs: string[]): Commit[] {
   });
 }
 
-// Generate a color from a string (for avatar backgrounds)
 function stringToColor(str: string): string {
   let hash = 0;
   for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash);
   const h = Math.abs(hash) % 360;
-  return `hsl(${h}, 55%, 45%)`;
+  return `hsl(${h}, 52%, 44%)`;
 }
 
 function AuthorAvatar({ name, email, size = 26 }: { name: string; email: string; size?: number }) {
-  const initials = name.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase() || "?";
+  const initials = name.split(" ").map((w: string) => w[0]).join("").slice(0, 2).toUpperCase() || "?";
   const bg = stringToColor(email || name);
   return (
     <div style={{
       width: size, height: size, borderRadius: "50%",
       background: bg, color: "#fff",
       display: "flex", alignItems: "center", justifyContent: "center",
-      fontSize: size * 0.38, fontWeight: 700, flexShrink: 0,
-      letterSpacing: "-0.02em",
+      fontSize: size * 0.37, fontWeight: 700, flexShrink: 0,
+      letterSpacing: 0,
+      boxShadow: `0 1px 3px ${bg}55`,
     }}>
       {initials}
     </div>
@@ -73,7 +77,6 @@ function AuthorAvatar({ name, email, size = 26 }: { name: string; email: string;
 }
 
 function layoutCommits(commits: Commit[]): CommitRow[] {
-  // lanes[col] = hash of the commit this lane is heading toward (null = free)
   const lanes: (string | null)[] = [];
   const laneColors: string[] = [];
   const rows: CommitRow[] = [];
@@ -89,7 +92,6 @@ function layoutCommits(commits: Commit[]): CommitRow[] {
   }
 
   for (const commit of commits) {
-    // Assign column for this commit
     let col = lanes.indexOf(commit.hash);
     if (col === -1) {
       col = lanes.indexOf(null);
@@ -97,26 +99,18 @@ function layoutCommits(commits: Commit[]): CommitRow[] {
       laneColors[col] = COLORS[col % COLORS.length];
     }
     const color = laneColors[col];
-
-    // Close this lane
     lanes[col] = null;
 
-    // Wire parents into lanes
     if (commit.parents.length === 0) {
-      // root — lane stays closed
+      // root
     } else if (commit.parents.length === 1) {
       const p = commit.parents[0];
-      const existing = lanes.indexOf(p);
-      if (existing !== -1) {
-        // This lane converges into an existing one — stays closed
-      } else {
-        lanes[col] = p; // continue same lane
+      if (lanes.indexOf(p) === -1) {
+        lanes[col] = p;
       }
     } else {
-      // Merge commit
       const [first, ...rest] = commit.parents;
-      const existingFirst = lanes.indexOf(first);
-      if (existingFirst === -1) lanes[col] = first; // continue lane for first parent
+      if (lanes.indexOf(first) === -1) lanes[col] = first;
       for (const p of rest) {
         if (lanes.indexOf(p) === -1) findOrAlloc(p);
       }
@@ -143,23 +137,14 @@ function parseRefs(refs: string) {
   let head = false;
   let headBranch = "";
   for (const p of parts) {
-    if (p === "HEAD") {
-      // Detached HEAD
-      head = true;
-      continue;
-    }
+    if (p === "HEAD") { head = true; continue; }
     if (p.startsWith("HEAD -> ")) {
-      // Attached HEAD — extract the branch name
       head = true;
       headBranch = p.slice(8);
       branches.push(headBranch);
       continue;
     }
-    if (p.startsWith("tag: ")) {
-      tags.push(p.slice(5));
-      continue;
-    }
-    // Skip "origin/HEAD" — it's a remote tracking pointer, not a real branch to display
+    if (p.startsWith("tag: ")) { tags.push(p.slice(5)); continue; }
     if (p === "origin/HEAD" || p.endsWith("/HEAD")) continue;
     branches.push(p);
   }
@@ -169,16 +154,6 @@ function parseRefs(refs: string) {
 export function GitGraphViewer({ logs, headOid, headBranch }: GitGraphViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => {
-      // Just to keep the effect observing, though we might not need to force re-render right now
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
   const rows = useMemo(() => {
     if (!logs || logs.length === 0) return [];
     return layoutCommits(parseLog(logs));
@@ -186,231 +161,288 @@ export function GitGraphViewer({ logs, headOid, headBranch }: GitGraphViewerProp
 
   if (rows.length === 0) {
     return (
-      <div className="flex items-center justify-center h-full text-default-400 text-sm">
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#9aaab8", fontSize: "0.88rem" }}>
         No commit history found.
       </div>
     );
   }
 
-
-  // How many lanes do we need?
   const maxCol = Math.max(...rows.map(r =>
     Math.max(r.col, ...r.lanesAfter.map((_, i) => i))
   ));
   const totalCols = maxCol + 1;
-  const graphW = totalCols * COL_W + 8;
+  const graphW = totalCols * COL_W + 12;
   const totalH = rows.length * ROW_H;
 
-  // Column widths: hash | author | refs | subject(flex)
-  const hashW = 64;
-  const authorW = 160;  // avatar + name + date
-  const refsW = 200;    // branch/tag badges
+  const COL_HEADER: React.CSSProperties = {
+    fontSize: "0.67rem",
+    fontWeight: 750,
+    textTransform: "uppercase" as const,
+    letterSpacing: "0.05em",
+    color: "#93a3b4",
+  };
 
   return (
-    <div ref={containerRef} style={{ height: "100%", overflowY: "auto", overflowX: "hidden" }}>
-      <div style={{ display: "flex", width: "100%" }}>
+    <div ref={containerRef} style={{ height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}>
 
-        {/* ── Unified SVG graph column ── */}
-        <svg
-          width={graphW}
-          height={totalH}
-          style={{ flexShrink: 0, display: "block" }}
-        >
-          {rows.map((row, rowIdx) => {
-            const cy = rowIdx * ROW_H + ROW_H / 2;
-            const cx = row.col * COL_W + COL_W / 2;
-            const nextRow = rows[rowIdx + 1];
-            const elements: React.ReactNode[] = [];
+      {/* ── Sticky column header ── */}
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        height: 30,
+        flexShrink: 0,
+        background: "rgba(248, 250, 252, 0.96)",
+        borderBottom: "1px solid rgba(21, 32, 43, 0.08)",
+        position: "sticky",
+        top: 0,
+        zIndex: 10,
+        userSelect: "none",
+      }}>
+        {/* spacer for graph column */}
+        <div style={{ width: graphW, flexShrink: 0 }} />
+        <div style={{ width: HASH_W, paddingLeft: 6, flexShrink: 0 }}>
+          <span style={COL_HEADER}>Hash</span>
+        </div>
+        <div style={{ width: AUTHOR_W, flexShrink: 0 }}>
+          <span style={COL_HEADER}>Author</span>
+        </div>
+        <div style={{ width: REFS_W, flexShrink: 0 }}>
+          <span style={COL_HEADER}>Refs</span>
+        </div>
+        <div style={{ flex: 1, minWidth: 0, paddingRight: 16 }}>
+          <span style={COL_HEADER}>Subject</span>
+        </div>
+      </div>
 
-            // ── Draw edges for this row ──
-            // Each row is responsible for drawing ALL lines that run through it,
-            // from yTop (top of row) to yBot (bottom of row).
-            // Lines passing through a commit dot are split: top→dot and dot→bottom.
+      {/* ── Scrollable body ── */}
+      <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
+        <div style={{ display: "flex", width: "100%" }}>
 
-            const prevRow = rowIdx > 0 ? rows[rowIdx - 1] : null;
-            const yTop = rowIdx * ROW_H;        // top of this row
-            const yBot = (rowIdx + 1) * ROW_H; // bottom of this row
+          {/* ── Unified SVG graph column ── */}
+          <svg
+            width={graphW}
+            height={totalH}
+            style={{ flexShrink: 0, display: "block" }}
+          >
+            {rows.map((row, rowIdx) => {
+              const cy = rowIdx * ROW_H + ROW_H / 2;
+              const cx = row.col * COL_W + COL_W / 2;
+              const nextRow = rows[rowIdx + 1];
+              const elements: React.ReactNode[] = [];
 
-            // ── Incoming lines (top of row → dot or pass-through) ──
-            // Based on the PREVIOUS row's lanesAfter (what was active coming in)
-            const incomingLanes = prevRow ? prevRow.lanesAfter : [];
-            const incomingColors = prevRow ? prevRow.laneColors : [];
+              const prevRow = rowIdx > 0 ? rows[rowIdx - 1] : null;
+              const yTop = rowIdx * ROW_H;
+              const yBot = (rowIdx + 1) * ROW_H;
 
-            for (let c = 0; c < incomingLanes.length; c++) {
-              const targetHash = incomingLanes[c];
-              if (targetHash === null) continue;
-              const x = c * COL_W + COL_W / 2;
+              const incomingLanes = prevRow ? prevRow.lanesAfter : [];
+              const incomingColors = prevRow ? prevRow.laneColors : [];
 
-              if (targetHash === row.hash) {
-                if (c === row.col) {
-                  // Straight incoming line to this commit
-                  elements.push(
-                    <line key={`in-${rowIdx}-${c}`}
-                      x1={x} y1={yTop} x2={cx} y2={cy}
-                      stroke={incomingColors[c] ?? "#ccc"} strokeWidth={1.5} />
-                  );
+              // Incoming lines
+              for (let c = 0; c < incomingLanes.length; c++) {
+                const targetHash = incomingLanes[c];
+                if (targetHash === null) continue;
+                const x = c * COL_W + COL_W / 2;
+                if (targetHash === row.hash) {
+                  if (c === row.col) {
+                    elements.push(
+                      <line key={`in-${rowIdx}-${c}`}
+                        x1={x} y1={yTop} x2={cx} y2={cy}
+                        stroke={incomingColors[c] ?? "#ccc"} strokeWidth={1.8} />
+                    );
+                  } else {
+                    elements.push(
+                      <path key={`in-diag-${rowIdx}-${c}`}
+                        d={`M ${x} ${yTop} C ${x} ${cy - ROW_H*0.4}, ${cx} ${cy - ROW_H*0.4}, ${cx} ${cy}`}
+                        stroke={incomingColors[c] ?? "#ccc"} strokeWidth={1.8} fill="none" />
+                    );
+                  }
                 } else {
-                  // Diagonal incoming: another lane converges into this commit
                   elements.push(
-                    <path key={`in-diag-${rowIdx}-${c}`}
-                      d={`M ${x} ${yTop} C ${x} ${cy - ROW_H*0.4}, ${cx} ${cy - ROW_H*0.4}, ${cx} ${cy}`}
-                      stroke={incomingColors[c] ?? "#ccc"} strokeWidth={1.5} fill="none" />
-                  );
-                }
-              } else {
-                // Pass-through: draw full top→bottom straight line
-                elements.push(
-                  <line key={`pass-${rowIdx}-${c}`}
-                    x1={x} y1={yTop} x2={x} y2={yBot}
-                    stroke={incomingColors[c] ?? "#ccc"} strokeWidth={1.5} />
-                );
-              }
-            }
-
-            // ── Outgoing lines (dot → bottom of row) ──
-            // Based on THIS row's lanesAfter (what becomes active after this commit)
-            if (nextRow) {
-              // 1. Straight outgoing: this commit's lane continues down
-              if (row.lanesAfter[row.col] !== null) {
-                elements.push(
-                  <line key={`out-self-${rowIdx}`}
-                    x1={cx} y1={cy} x2={cx} y2={yBot}
-                    stroke={row.color} strokeWidth={1.5} />
-                );
-              }
-
-              // 2. Convergence: first parent already in a different lane
-              if (row.parents.length >= 1) {
-                const firstParent = row.parents[0];
-                const existingCol = row.lanesAfter.indexOf(firstParent);
-                if (existingCol !== -1 && existingCol !== row.col) {
-                  const x2 = existingCol * COL_W + COL_W / 2;
-                  elements.push(
-                    <path key={`conv-${rowIdx}`}
-                      d={`M ${cx} ${cy} C ${cx} ${cy + ROW_H*0.5}, ${x2} ${yBot - ROW_H*0.5}, ${x2} ${yBot}`}
-                      stroke={row.color} strokeWidth={1.5} fill="none" />
+                    <line key={`pass-${rowIdx}-${c}`}
+                      x1={x} y1={yTop} x2={x} y2={yBot}
+                      stroke={incomingColors[c] ?? "#ccc"} strokeWidth={1.8} />
                   );
                 }
               }
 
-              // 3. Merge parents (2nd+): branch out to newly opened lanes
-              for (let pi = 1; pi < row.parents.length; pi++) {
-                const p = row.parents[pi];
-                const targetCol = row.lanesAfter.indexOf(p);
-                if (targetCol !== -1) {
-                  const x2 = targetCol * COL_W + COL_W / 2;
-                  const branchColor = row.laneColors[targetCol] ?? row.color;
+              // Outgoing lines
+              if (nextRow) {
+                if (row.lanesAfter[row.col] !== null) {
                   elements.push(
-                    <path key={`merge-${rowIdx}-${pi}`}
-                      d={`M ${cx} ${cy} C ${cx} ${cy + ROW_H*0.5}, ${x2} ${yBot - ROW_H*0.5}, ${x2} ${yBot}`}
-                      stroke={branchColor} strokeWidth={1.5} fill="none" />
+                    <line key={`out-self-${rowIdx}`}
+                      x1={cx} y1={cy} x2={cx} y2={yBot}
+                      stroke={row.color} strokeWidth={1.8} />
                   );
                 }
-              }
-
-              // 4. New lanes opened that are NOT this commit's col (new branches from merge)
-              // These are lanes in lanesAfter that weren't in incomingLanes
-              for (let c = 0; c < row.lanesAfter.length; c++) {
-                if (c === row.col) continue; // handled above
-                if (row.lanesAfter[c] === null) continue;
-                // Check if this lane existed before (then it's a pass-through, already drawn)
-                const wasActive = c < incomingLanes.length && incomingLanes[c] !== null;
-                if (!wasActive) {
-                  // New lane opened at this row — it was already drawn as a merge branch above
-                  // (handled by merge parent loop), so skip
+                if (row.parents.length >= 1) {
+                  const firstParent = row.parents[0];
+                  const existingCol = row.lanesAfter.indexOf(firstParent);
+                  if (existingCol !== -1 && existingCol !== row.col) {
+                    const x2 = existingCol * COL_W + COL_W / 2;
+                    elements.push(
+                      <path key={`conv-${rowIdx}`}
+                        d={`M ${cx} ${cy} C ${cx} ${cy + ROW_H*0.5}, ${x2} ${yBot - ROW_H*0.5}, ${x2} ${yBot}`}
+                        stroke={row.color} strokeWidth={1.8} fill="none" />
+                    );
+                  }
+                }
+                for (let pi = 1; pi < row.parents.length; pi++) {
+                  const p = row.parents[pi];
+                  const targetCol = row.lanesAfter.indexOf(p);
+                  if (targetCol !== -1) {
+                    const x2 = targetCol * COL_W + COL_W / 2;
+                    const branchColor = row.laneColors[targetCol] ?? row.color;
+                    elements.push(
+                      <path key={`merge-${rowIdx}-${pi}`}
+                        d={`M ${cx} ${cy} C ${cx} ${cy + ROW_H*0.5}, ${x2} ${yBot - ROW_H*0.5}, ${x2} ${yBot}`}
+                        stroke={branchColor} strokeWidth={1.8} fill="none" />
+                    );
+                  }
                 }
               }
-            }
 
-            // Commit dot
-            elements.push(
-              <circle key={`outer-${rowIdx}`} cx={cx} cy={cy} r={DOT_R} fill={row.color} />,
-              <circle key={`inner-${rowIdx}`} cx={cx} cy={cy} r={DOT_R - 2} fill="white" />,
-            );
+              // Commit dot — outer glow + filled ring
+              elements.push(
+                <circle key={`glow-${rowIdx}`} cx={cx} cy={cy} r={DOT_R + 2.5} fill={row.color} opacity={0.14} />,
+                <circle key={`dot-${rowIdx}`} cx={cx} cy={cy} r={DOT_R} fill={row.color} />,
+                <circle key={`inner-${rowIdx}`} cx={cx} cy={cy} r={DOT_R - 2} fill="white" />,
+              );
 
-            return <g key={rowIdx}>{elements}</g>;
-          })}
-        </svg>
+              return <g key={rowIdx}>{elements}</g>;
+            })}
+          </svg>
 
-        {/* ── Text columns ── */}
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-          {rows.map((row) => {
-            const { branches, tags } = parseRefs(row.refs);
-            const isHead = headOid.length >= 7 && (
-              row.hash === headOid || headOid.startsWith(row.hash)
-            );
-            const rowHeadBranch = isHead ? (headBranch === "HEAD" ? "" : headBranch) : "";
-            return (
-              <div
-                key={row.hash}
-                style={{
-                  height: ROW_H,
-                  display: "flex",
-                  alignItems: "center",
-                  borderBottom: "1px solid #f0f0f0",
-                  cursor: "default",
-                  transition: "background 0.1s",
-                  overflow: "hidden",
-                }}
-                onMouseEnter={e => (e.currentTarget.style.background = "rgba(255, 255, 255, 0.4)")}
-                onMouseLeave={e => (e.currentTarget.style.background = "")}
-              >
-                {/* Hash */}
-                <div style={{ width: hashW, paddingLeft: 6, flexShrink: 0 }}>
-                  <span style={{ fontSize: "0.75rem", fontFamily: "monospace", color: row.color, fontWeight: 700 }}>
-                    {row.hash.slice(0, 7)}
-                  </span>
-                </div>
+          {/* ── Text columns ── */}
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+            {rows.map((row, rowIdx) => {
+              const { branches, tags } = parseRefs(row.refs);
+              const isHead = headOid.length >= 7 && (
+                row.hash === headOid || headOid.startsWith(row.hash)
+              );
+              const rowHeadBranch = isHead ? (headBranch === "HEAD" ? "" : headBranch) : "";
+              const isEven = rowIdx % 2 === 0;
 
-                {/* Author: avatar + name + date */}
-                <div style={{ width: authorW, flexShrink: 0, display: "flex", alignItems: "center", gap: 8, paddingRight: 10 }}>
-                  <AuthorAvatar name={row.author} email={row.email} size={26} />
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: "0.78rem", color: "#24292f", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                      {row.author}
-                    </div>
-                    <div style={{ fontSize: "0.68rem", color: "#999", whiteSpace: "nowrap" }}>
-                      {row.date}
+              return (
+                <div
+                  key={row.hash}
+                  style={{
+                    height: ROW_H,
+                    display: "flex",
+                    alignItems: "center",
+                    borderBottom: "1px solid rgba(21,32,43,0.05)",
+                    cursor: "default",
+                    transition: "background 0.12s",
+                    overflow: "hidden",
+                    background: isHead
+                      ? "rgba(10,132,255,0.05)"
+                      : isEven
+                        ? "rgba(255,255,255,0.22)"
+                        : "transparent",
+                  }}
+                  onMouseEnter={e => (e.currentTarget.style.background = "rgba(10,132,255,0.07)")}
+                  onMouseLeave={e => (e.currentTarget.style.background = isHead
+                    ? "rgba(10,132,255,0.05)"
+                    : isEven ? "rgba(255,255,255,0.22)" : "transparent")}
+                >
+                  {/* Hash */}
+                  <div style={{ width: HASH_W, paddingLeft: 6, flexShrink: 0 }}>
+                    <code style={{
+                      fontSize: "0.71rem",
+                      fontFamily: "ui-monospace, 'SF Mono', Menlo, Consolas, monospace",
+                      color: row.color,
+                      fontWeight: 700,
+                      background: `${row.color}15`,
+                      padding: "2px 5px",
+                      borderRadius: 5,
+                      border: `1px solid ${row.color}25`,
+                    }}>
+                      {row.hash.slice(0, 7)}
+                    </code>
+                  </div>
+
+                  {/* Author: avatar + name + date */}
+                  <div style={{ width: AUTHOR_W, flexShrink: 0, display: "flex", alignItems: "center", gap: 7, paddingRight: 10 }}>
+                    <AuthorAvatar name={row.author} email={row.email} size={26} />
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{
+                        fontSize: "0.76rem", color: "#1e2a35", fontWeight: 600,
+                        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                        lineHeight: 1.3,
+                      }}>
+                        {row.author}
+                      </div>
+                      <div style={{ fontSize: "0.66rem", color: "#97aabb", whiteSpace: "nowrap", lineHeight: 1.3 }}>
+                        {row.date}
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                {/* Refs badges */}
-                <div style={{ width: refsW, flexShrink: 0, display: "flex", flexWrap: "wrap", gap: 3, paddingRight: 8, alignItems: "center", overflow: "hidden" }}>
-                  {isHead && (
-                    <span style={{ fontSize: "0.68rem", padding: "1px 5px", borderRadius: 4, background: "#24292f", color: "#fff", fontWeight: 700, whiteSpace: "nowrap", lineHeight: "1.5", display: "inline-flex", alignItems: "center", gap: 3 }}>
-                      HEAD{rowHeadBranch ? <span style={{ opacity: 0.65, fontWeight: 400 }}>→ {rowHeadBranch}</span> : ""}
-                    </span>
-                  )}
-                  {branches.filter(b => b !== rowHeadBranch).map(b => (
-                    <span key={b} style={{ fontSize: "0.68rem", padding: "1px 5px", borderRadius: 4, background: "#dbeafe", color: "#1d4ed8", border: "1px solid #bfdbfe", whiteSpace: "nowrap", maxWidth: 110, overflow: "hidden", textOverflow: "ellipsis", lineHeight: "1.5" }}>
-                      {b}
-                    </span>
-                  ))}
-                  {tags.map(t => (
-                    <span key={t} style={{ fontSize: "0.68rem", padding: "1px 5px", borderRadius: 4, background: "#fef9c3", color: "#854d0e", border: "1px solid #fde047", whiteSpace: "nowrap", lineHeight: "1.5" }}>
-                      🏷 {t}
-                    </span>
-                  ))}
-                </div>
-
-                {/* Subject — fills remaining space */}
-                <div style={{ flex: 1, paddingRight: 16, minWidth: 0 }}>
-                  <span style={{
-                    fontSize: "0.85rem",
-                    color: "#24292f",
-                    display: "block",
-                    whiteSpace: "nowrap",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    lineHeight: "1.4",
+                  {/* Refs badges */}
+                  <div style={{
+                    width: REFS_W, flexShrink: 0,
+                    display: "flex", flexWrap: "nowrap", gap: 3,
+                    paddingRight: 8, alignItems: "center", overflow: "hidden",
                   }}>
-                    {row.subject}
-                  </span>
+                    {isHead && (
+                      <span style={{
+                        fontSize: "0.66rem", padding: "2px 6px", borderRadius: 5,
+                        background: "#1a2330", color: "#fff", fontWeight: 700,
+                        whiteSpace: "nowrap", lineHeight: "1.55",
+                        display: "inline-flex", alignItems: "center", gap: 3,
+                        boxShadow: "0 1px 4px rgba(0,0,0,0.2)",
+                        flexShrink: 0,
+                      }}>
+                        HEAD{rowHeadBranch
+                          ? <span style={{ opacity: 0.5, fontWeight: 400, marginLeft: 1 }}>→ {rowHeadBranch}</span>
+                          : null}
+                      </span>
+                    )}
+                    {branches.filter(b => b !== rowHeadBranch).slice(0, 2).map(b => (
+                      <span key={b} style={{
+                        fontSize: "0.66rem", padding: "2px 6px", borderRadius: 5,
+                        background: "rgba(10,132,255,0.1)", color: "#0a5eb6",
+                        border: "1px solid rgba(10,132,255,0.2)",
+                        whiteSpace: "nowrap", maxWidth: 108, overflow: "hidden", textOverflow: "ellipsis",
+                        lineHeight: "1.55", flexShrink: 0,
+                        display: "inline-flex", alignItems: "center", gap: 3,
+                      }}>
+                        <svg width="8" height="9" viewBox="0 0 8 9" fill="none" style={{ opacity: 0.6 }}>
+                          <path d="M1 1v4.5a1.5 1.5 0 0 0 1.5 1.5H5M1 1l2-0M1 1l2 2M6.5 6a1.5 1.5 0 1 1 0 .001" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+                        </svg>
+                        {b}
+                      </span>
+                    ))}
+                    {tags.slice(0, 1).map(t => (
+                      <span key={t} style={{
+                        fontSize: "0.66rem", padding: "2px 6px", borderRadius: 5,
+                        background: "rgba(234,179,8,0.11)", color: "#92560a",
+                        border: "1px solid rgba(234,179,8,0.26)",
+                        whiteSpace: "nowrap", lineHeight: "1.55", flexShrink: 0,
+                      }}>
+                        🏷 {t}
+                      </span>
+                    ))}
+                  </div>
+
+                  {/* Subject — fills remaining space */}
+                  <div style={{ flex: 1, paddingRight: 16, minWidth: 0 }}>
+                    <span style={{
+                      fontSize: "0.84rem",
+                      color: isHead ? "#0a3d8f" : "#1e2a35",
+                      display: "block",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      lineHeight: "1.4",
+                      fontWeight: isHead ? 600 : 400,
+                    }}>
+                      {row.subject}
+                    </span>
+                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
       </div>
     </div>

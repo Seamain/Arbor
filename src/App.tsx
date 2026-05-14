@@ -6,13 +6,17 @@ import { Spinner, Modal, Dropdown } from "@heroui/react";
 import {
   FolderGit2, RefreshCw, ArrowDownToLine, ArrowUpFromLine,
   Terminal, FolderOpen, FileCode, GitBranch, Plus, Check,
-  MoreVertical, History, X, GitCommitHorizontal, Clock,
+  MoreVertical, History, X, GitCommitHorizontal, Clock, TriangleAlert,
+  ChevronDown, ChevronUp, RotateCcw, Trash2, PanelLeftClose, PanelLeftOpen,
 } from "lucide-react";
 import "./App.css";
 import { GitGraphViewer } from "./components/GitGraphViewer";
+import { ConflictModal } from "./components/ConflictModal";
+import { LocalChangesModal } from "./components/LocalChangesModal";
 
 // ─── persistence ────────────────────────────────────────────────────────────
 const HISTORY_KEY = "git-client-repo-history";
+const PENDING_AUTO_STASHES_KEY = "git-client-pending-auto-stashes";
 const MAX_HISTORY = 12;
 
 function loadHistory(): string[] {
@@ -25,6 +29,13 @@ function pushHistory(path: string) {
 }
 function deleteHistory(path: string) {
   localStorage.setItem(HISTORY_KEY, JSON.stringify(loadHistory().filter(p => p !== path)));
+}
+function loadPendingAutoStashes(): Record<string, string> {
+  try { return JSON.parse(localStorage.getItem(PENDING_AUTO_STASHES_KEY) ?? "{}"); }
+  catch { return {}; }
+}
+function savePendingAutoStashes(stashes: Record<string, string>) {
+  localStorage.setItem(PENDING_AUTO_STASHES_KEY, JSON.stringify(stashes));
 }
 
 // ─── types ──────────────────────────────────────────────────────────────────
@@ -41,6 +52,7 @@ interface RepoTab {
   headOid: string;
   headBranch: string;
   behindCount: number;  // how many commits HEAD is behind remote
+  hasConflicts: boolean; // whether there are unmerged files
   branches: string[];
   modifiedFiles: string[];
   historyLogs: string[];
@@ -56,7 +68,7 @@ function makeTab(path: string): RepoTab {
   return {
     path,
     label: path.split("/").filter(Boolean).pop() ?? path,
-    status: "", headOid: "", headBranch: "", behindCount: 0,
+    status: "", headOid: "", headBranch: "", behindCount: 0, hasConflicts: false,
     branches: [], modifiedFiles: [], historyLogs: [],
     logs: [], loading: {}, selectedFile: null, fileDiff: "",
     selectedTab: "history", consoleOpen: false,
@@ -72,6 +84,14 @@ function parseBehindCount(status: string): number {
     }
   }
   return 0;
+}
+
+// Check for unmerged files (starts with "u ") in git status v2
+function parseHasConflicts(status: string): boolean {
+  for (const line of status.split("\n")) {
+    if (line.startsWith("u ")) return true;
+  }
+  return false;
 }
 
 // Parse the "sha~|~branch" response from git_head_oid
@@ -96,12 +116,18 @@ export default function App() {
   const [tabs, setTabs] = useState<RepoTab[]>([]);
   const [activeTabPath, setActiveTabPath] = useState<string | null>(null);
   const [history, setHistory] = useState<string[]>(loadHistory);
+  const [pendingAutoStashes, setPendingAutoStashes] = useState<Record<string, string>>(loadPendingAutoStashes);
   const [isBranchModalOpen, setIsBranchModalOpen] = useState(false);
+  const [isConflictModalOpen, setIsConflictModalOpen] = useState(false);
+  const [localChangesState, setLocalChangesState] = useState<{isOpen: boolean, files: string[], command: string}>({ isOpen: false, files: [], command: "" });
   const [newBranchName, setNewBranchName] = useState("");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const activeTab = tabs.find(t => t.path === activeTabPath) ?? null;
   const tabsRef = useRef(tabs);
+  const pendingAutoStashesRef = useRef(pendingAutoStashes);
   useEffect(() => { tabsRef.current = tabs; }, [tabs]);
+  useEffect(() => { pendingAutoStashesRef.current = pendingAutoStashes; }, [pendingAutoStashes]);
 
   // After a fullRefresh completes, block silentRefresh for this many ms
   // so file-watcher events triggered by the git operation itself can't
@@ -123,6 +149,36 @@ export default function App() {
       t.path === path ? { ...t, logs: [...t.logs, entry] } : t
     ));
   }
+  function rememberPendingAutoStash(path: string, stashOid: string) {
+    const next = { ...pendingAutoStashesRef.current, [path]: stashOid };
+    pendingAutoStashesRef.current = next;
+    savePendingAutoStashes(next);
+    setPendingAutoStashes(next);
+    addLog(path, "info", "Auto stash saved; it will be released after recovery.");
+  }
+  function clearPendingAutoStash(path: string) {
+    const next = { ...pendingAutoStashesRef.current };
+    delete next[path];
+    pendingAutoStashesRef.current = next;
+    savePendingAutoStashes(next);
+    setPendingAutoStashes(next);
+  }
+  async function releasePendingAutoStash(path: string) {
+    const stashOid = pendingAutoStashesRef.current[path];
+    if (!stashOid) return;
+
+    try {
+      const result = await invoke<string>("git_stash_drop", { path, stashOid });
+      addLog(path, "success", result || "Auto stash released.");
+      clearPendingAutoStash(path);
+    } catch (e) {
+      addLog(path, "error", `Failed to release auto stash: ${e}`);
+    }
+  }
+  async function handleConflictResolved(path: string) {
+    await releasePendingAutoStash(path);
+    await fullRefresh(path);
+  }
 
   // ── watcher ─────────────────────────────────────────────────────────────
   const silentRefresh = useCallback(async (path: string) => {
@@ -143,7 +199,8 @@ export default function App() {
         ? parseHeadOid(headRaw)
         : parseHeadFromStatus(status);
       const behindCount = parseBehindCount(status);
-      patchTab(path, { status, headOid, headBranch, behindCount, modifiedFiles, branches, historyLogs });
+      const hasConflicts = parseHasConflicts(status);
+      patchTab(path, { status, headOid, headBranch, behindCount, hasConflicts, modifiedFiles, branches, historyLogs });
     } catch { /* ignore transient fs errors */ }
   }, []);
 
@@ -187,7 +244,8 @@ export default function App() {
         ? parseHeadOid(headRaw)
         : parseHeadFromStatus(status);
       const behindCount = parseBehindCount(status);
-      patchTab(path, { status, headOid, headBranch, behindCount, modifiedFiles, branches, historyLogs });
+      const hasConflicts = parseHasConflicts(status);
+      patchTab(path, { status, headOid, headBranch, behindCount, hasConflicts, modifiedFiles, branches, historyLogs });
       addLog(path, "success", "Repository loaded successfully.");
     } catch (e) {
       addLog(path, "error", `Error: ${e}`);
@@ -222,6 +280,26 @@ export default function App() {
       return result;
     } catch (e) {
       addLog(path, "error", `Error: ${e}`);
+      if (!["Status", "History"].includes(name)) fullRefresh(path);
+      const errStr = String(e);
+      if (errStr.includes("CONFLICT") || errStr.includes("Fix conflicts")) {
+        setIsConflictModalOpen(true);
+      } else if (errStr.includes("would be overwritten by merge") || errStr.includes("would be overwritten by checkout")) {
+        const files: string[] = [];
+        const lines = errStr.split('\n');
+        let inFiles = false;
+        for (const line of lines) {
+          if (line.includes("would be overwritten by")) {
+            inFiles = true;
+            continue;
+          }
+          if (inFiles) {
+            if (line.trim().startsWith("Please commit") || line.trim() === "Aborting") break;
+            if (line.trim()) files.push(line.trim());
+          }
+        }
+        setLocalChangesState({ isOpen: true, files, command });
+      }
       throw e;
     } finally {
       patchTabLoading(path, name, false);
@@ -276,36 +354,118 @@ export default function App() {
     }
   }
 
+  async function discardFile(path: string, file: string) {
+    const confirmed = window.confirm(`Discard all changes in ${file}?`);
+    if (!confirmed) return;
+
+    patchTabLoading(path, "Discard", true);
+    addLog(path, "command", `Discarding ${file}...`);
+    try {
+      await invoke<string>("git_discard_file", { path, filePath: file });
+      addLog(path, "success", `Discarded changes in ${file}.`);
+      const current = tabsRef.current.find(tab => tab.path === path);
+      if (current?.selectedFile === file) {
+        patchTab(path, { selectedFile: null, fileDiff: "", selectedTab: "history" });
+      }
+      await fullRefresh(path);
+    } catch (e) {
+      addLog(path, "error", `Failed to discard ${file}: ${e}`);
+    } finally {
+      patchTabLoading(path, "Discard", false);
+    }
+  }
+
+  async function discardAllChanges(path: string) {
+    const confirmed = window.confirm("Discard all local changes and untracked files?");
+    if (!confirmed) return;
+
+    patchTabLoading(path, "Discard All", true);
+    addLog(path, "command", "Discarding all changes...");
+    try {
+      await invoke<string>("git_discard_all_changes", { path });
+      addLog(path, "success", "Discarded all local changes.");
+      patchTab(path, { selectedFile: null, fileDiff: "", selectedTab: "history" });
+      await fullRefresh(path);
+    } catch (e) {
+      addLog(path, "error", `Failed to discard all changes: ${e}`);
+    } finally {
+      patchTabLoading(path, "Discard All", false);
+    }
+  }
+
   // ─── render ──────────────────────────────────────────────────────────────
   const t = activeTab;
   const isAnyLoading = t ? Object.values(t.loading).some(Boolean) : false;
+  const localBranches = t ? t.branches.filter(b => !b.includes("remotes/")) : [];
+  const remoteBranches = t ? t.branches.filter(b => b.includes("remotes/") && !b.includes("->")) : [];
+  const currentBranchLabel = t?.headBranch && t.headBranch !== "HEAD" ? t.headBranch : "detached";
 
   return (
     <div className="h-screen w-screen flex text-foreground overflow-hidden liquid-glass-base">
 
       {/* ── Left sidebar ── */}
-      <div className="w-64 shrink-0 flex flex-col liquid-glass-sidebar z-20">
-
-        {/* Title */}
-        <div className="px-5 py-4 border-b border-default-200/50 flex items-center gap-2.5">
-          <FolderGit2 size={20} className="text-default-700 shrink-0" />
-          <span className="font-semibold text-base text-default-800 truncate">Git Client</span>
-        </div>
+      <div
+        className={`sidebar-shell shrink-0 flex flex-col liquid-glass-sidebar z-20 ${sidebarCollapsed ? "sidebar-collapsed" : "sidebar-expanded"}`}
+      >
+        {/* Title / brand row */}
+        {sidebarCollapsed ? (
+          /* Collapsed: only the expand button, centered */
+          <div className="app-brand border-b border-default-200/50 flex items-center justify-center" style={{ minHeight: 56 }}>
+            <button
+              onClick={() => setSidebarCollapsed(false)}
+              className="sidebar-toggle-btn p-1.5 rounded-md hover:bg-default-200 transition-colors"
+              aria-label="Expand sidebar"
+              title="Expand sidebar"
+            >
+              <PanelLeftOpen size={16} className="text-default-500" />
+            </button>
+          </div>
+        ) : (
+          /* Expanded: brand mark + title + collapse button */
+          <div className="app-brand px-3 py-3 border-b border-default-200/50 flex items-center gap-2.5">
+            <div className="app-brand-mark shrink-0" title="Git Client">
+              <FolderGit2 size={17} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <span className="block font-semibold text-base text-default-900 truncate">Git Client</span>
+              <span className="block text-xs text-default-400 truncate">Repository workbench</span>
+            </div>
+            <button
+              onClick={() => setSidebarCollapsed(true)}
+              className="sidebar-toggle-btn shrink-0 p-1 rounded-md hover:bg-default-200 transition-colors"
+              aria-label="Collapse sidebar"
+              title="Collapse sidebar"
+            >
+              <PanelLeftClose size={15} className="text-default-500" />
+            </button>
+          </div>
+        )}
 
         {/* Open button */}
-        <div className="p-3 border-b border-default-200/50">
-          <button
-            onClick={pickFolder}
-            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium bg-default-100 hover:bg-default-200/60 text-default-700 transition-colors shadow-sm border border-default-200/50"
-          >
-            <FolderOpen size={15} />
-            Open Folder
-          </button>
+        <div className="p-2.5 border-b border-default-200/50">
+          {sidebarCollapsed ? (
+            <button
+              onClick={pickFolder}
+              className="primary-action w-full flex items-center justify-center p-2 rounded-lg"
+              title="Open Folder"
+              aria-label="Open Folder"
+            >
+              <FolderOpen size={16} />
+            </button>
+          ) : (
+            <button
+              onClick={pickFolder}
+              className="primary-action w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm font-semibold text-default-800"
+            >
+              <FolderOpen size={15} />
+              Open Folder
+            </button>
+          )}
         </div>
 
         {/* Open tabs */}
         <div className="flex-1 overflow-y-auto py-2">
-          {tabs.length === 0 && (
+          {!sidebarCollapsed && tabs.length === 0 && (
             <p className="text-sm text-default-400 text-center mt-8 px-4">No repositories open</p>
           )}
           {tabs.map(tab => {
@@ -314,31 +474,35 @@ export default function App() {
             return (
               <div
                 key={tab.path}
-                className={`group flex items-center gap-2 mx-2 px-3 py-2 rounded-lg cursor-pointer transition-colors ${isActive ? "bg-black/5 dark:bg-white/10 text-default-900 shadow-[inset_0_1px_1px_rgba(255,255,255,0.4)]" : "text-default-600 hover:bg-default-100/50"}`}
+                className={`repo-tab group flex items-center gap-2 mx-2 px-2.5 py-2 rounded-lg cursor-pointer ${isActive ? "repo-tab-active text-default-900" : "text-default-600"}`}
                 onClick={() => setActiveTabPath(tab.path)}
                 title={tab.path}
               >
                 {tabLoading
                   ? <Spinner size="sm" color="current" className="shrink-0" />
-                  : <GitCommitHorizontal size={16} className="shrink-0" />
+                  : <GitCommitHorizontal size={15} className="shrink-0" />
                 }
-                <span className="flex-1 truncate text-sm font-medium">{tab.label}</span>
-                <button
-                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-default-200 transition-all shrink-0"
-                  onClick={e => { e.stopPropagation(); closeTab(tab.path); }}
-                  aria-label="Close tab"
-                >
-                  <X size={14} />
-                </button>
+                {!sidebarCollapsed && (
+                  <>
+                    <span className="flex-1 truncate text-sm font-medium">{tab.label}</span>
+                    <button
+                      className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-default-200 transition-all shrink-0"
+                      onClick={e => { e.stopPropagation(); closeTab(tab.path); }}
+                      aria-label="Close tab"
+                    >
+                      <X size={14} />
+                    </button>
+                  </>
+                )}
               </div>
             );
           })}
         </div>
 
-        {/* Recent history */}
-        {history.length > 0 && (
-          <div className="border-t border-default-200">
-            <div className="px-3 py-2 flex items-center gap-1.5 text-xs font-semibold text-default-400 uppercase tracking-wider">
+        {/* Recent history — hidden when collapsed */}
+        {!sidebarCollapsed && history.length > 0 && (
+          <div className="border-t border-default-200/70">
+            <div className="px-3 py-2 flex items-center gap-1.5 panel-title">
               <Clock size={13} />
               Recent
             </div>
@@ -347,7 +511,7 @@ export default function App() {
                 const label = p.split("/").filter(Boolean).pop() ?? p;
                 const alreadyOpen = tabs.some(tab => tab.path === p);
                 return (
-                  <div key={p} className="group flex items-center mx-1.5 px-2 py-1.5 rounded-lg hover:bg-default-100 transition-colors">
+                  <div key={p} className="recent-row group flex items-center mx-1.5 px-2 py-1.5 rounded-lg">
                     <button
                       className="flex-1 flex items-center gap-2 min-w-0 text-left"
                       onClick={() => openRepo(p)}
@@ -377,23 +541,27 @@ export default function App() {
         {/* Welcome screen */}
         {!t && (
           <div className="flex-1 flex flex-col items-center justify-center gap-8 p-12 text-center">
-            <div className="flex flex-col items-center gap-3">
-              <FolderGit2 size={52} className="text-default-300" />
-              <h2 className="text-2xl font-semibold text-default-600">Open a Git Repository</h2>
-              <p className="text-base text-default-400 max-w-xs">
-                Click <strong>Open Folder</strong> in the sidebar, or pick a recent repository below.
-              </p>
+            <div className="welcome-surface w-full max-w-xl p-8 flex flex-col items-center gap-4">
+              <div className="welcome-icon">
+                <FolderGit2 size={30} />
+              </div>
+              <div>
+                <h2 className="text-2xl font-semibold text-default-800">Open a Git Repository</h2>
+                <p className="text-base text-default-500 max-w-sm mt-2">
+                  Focus on a repository and keep history, branches, and changes in view.
+                </p>
+              </div>
             </div>
             {history.length > 0 && (
               <div className="w-full max-w-lg">
-                <p className="text-sm font-semibold text-default-400 uppercase tracking-wider mb-3 text-left">Recent Repositories</p>
+                <p className="panel-title mb-3 text-left">Recent Repositories</p>
                 <ul className="space-y-1.5">
                   {history.map(p => {
                     const label = p.split("/").filter(Boolean).pop() ?? p;
                     return (
                       <li key={p}>
                         <button
-                          className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-default-50 hover:bg-default-100 border border-default-200 transition-colors text-left group"
+                          className="welcome-repo w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left group"
                           onClick={() => openRepo(p)}
                         >
                           <FolderGit2 size={18} className="text-default-400 shrink-0 group-hover:text-primary transition-colors" />
@@ -415,15 +583,40 @@ export default function App() {
         {t && (
           <>
             {/* Top bar */}
-            <header className="shrink-0 border-b border-default-200 bg-default-50/50">
+            <header className="repo-toolbar shrink-0">
               {isAnyLoading && (
-                <div className="h-0.5 w-full bg-primary/20">
-                  <div className="h-full bg-primary animate-pulse w-full" />
+                <div className="h-0.5 w-full bg-primary/15">
+                  <div className="h-full bg-primary animate-pulse w-full shadow-[0_0_16px_rgba(10,132,255,0.45)]" />
                 </div>
               )}
               <div className="flex items-center gap-3 px-4 py-2.5">
-                <p className="flex-1 text-sm text-default-500 font-mono truncate" title={t.path}>{t.path}</p>
+                <div className="flex-1 min-w-0 flex items-center gap-2">
+                  <p className="repo-path truncate" title={t.path}>{t.path}</p>
+                  <span className="status-chip status-chip-branch">
+                    <GitBranch size={13} />
+                    {currentBranchLabel}
+                  </span>
+                  <span className={`status-chip ${t.modifiedFiles.length > 0 ? "status-chip-warning" : ""}`}>
+                    <FileCode size={13} />
+                    {t.modifiedFiles.length} changed
+                  </span>
+                  {t.behindCount > 0 && (
+                    <span className="status-chip status-chip-warning">
+                      <ArrowDownToLine size={13} />
+                      {t.behindCount} behind
+                    </span>
+                  )}
+                </div>
                 <div className="flex gap-1.5 shrink-0">
+                  {t.hasConflicts && (
+                    <button
+                      onClick={() => setIsConflictModalOpen(true)}
+                      className="toolbar-button toolbar-button-danger flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold"
+                    >
+                      <TriangleAlert size={15} />
+                      Resolve Conflicts
+                    </button>
+                  )}
                   {[
                     { cmd: "git_fetch", name: "Fetch",  icon: <RefreshCw size={15} /> },
                     { cmd: "git_pull",  name: "Pull",   icon: <ArrowDownToLine size={15} /> },
@@ -433,7 +626,7 @@ export default function App() {
                       key={name}
                       disabled={!!t.loading[name]}
                       onClick={() => runCommand(t.path, cmd, name, { path: t.path })}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border border-default-200 bg-content1 hover:bg-default-100 disabled:opacity-50 transition-colors"
+                      className="toolbar-button flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold disabled:opacity-50"
                     >
                       {t.loading[name] ? <Spinner size="sm" color="current" /> : icon}
                       {name}
@@ -446,39 +639,46 @@ export default function App() {
             <div className="flex-1 flex min-h-0">
 
               {/* Branch panel */}
-              <div className="w-48 shrink-0 border-r border-default-200 flex flex-col bg-content2/30">
-                <div className="px-3 py-2.5 border-b border-default-200 flex items-center justify-between">
-                  <span className="text-xs font-semibold text-default-500 uppercase tracking-wider">Branches</span>
+              <div className="side-panel w-52 shrink-0 flex flex-col">
+                <div className="panel-header px-3 py-2.5 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="panel-title">Branches</span>
+                    <span className="count-pill">{localBranches.length + remoteBranches.length}</span>
+                  </div>
                   <button
                     onClick={() => setIsBranchModalOpen(true)}
-                    className="p-0.5 rounded hover:bg-default-200 transition-colors"
+                    className="icon-button p-1 rounded hover:bg-default-200 transition-colors"
                     aria-label="New Branch"
                   >
                     <Plus size={15} className="text-default-500" />
                   </button>
                 </div>
-                <div className="flex-1 overflow-y-auto p-2 space-y-3">
-                  <div>
-                    <p className="text-xs font-semibold text-default-400 uppercase tracking-wider mb-1.5 px-1">Local</p>
-                    {t.branches.filter(b => !b.includes("remotes/")).map(b => {
+                <div className="flex-1 overflow-y-auto py-2">
+                  {/* Local branches */}
+                  <div className="mb-1">
+                    <div className="flex items-center gap-1.5 px-3 py-1.5 mb-0.5">
+                      <span className="panel-title">Local</span>
+                      <span className="count-pill">{localBranches.length}</span>
+                    </div>
+                    {localBranches.map(b => {
                       const isCurrent = b.startsWith("* ");
                       const name = b.replace("* ", "");
                       return (
-                        <div key={name} className="group relative flex items-center">
+                        <div key={name} className="group relative flex items-center mx-1.5 mb-0.5">
                           <button
-                            className={`flex-1 flex items-center gap-2 px-2 py-1.5 rounded-md text-sm transition-colors text-left hover:bg-default-100 ${isCurrent ? "text-primary font-semibold" : "text-default-600"}`}
+                            className={`branch-row flex-1 flex items-center gap-2 px-2.5 py-1.5 rounded-md text-sm text-left ${isCurrent ? "branch-row-current font-semibold" : "text-default-600"}`}
                             onClick={() => handleCheckout(t.path, name)}
                             title={name}
                           >
                             {isCurrent
-                              ? <Check size={13} strokeWidth={3} className="shrink-0 text-primary" />
-                              : <GitBranch size={13} className="shrink-0 text-default-400" />}
-                            <span className="truncate pr-5">{name}</span>
+                              ? <Check size={12} strokeWidth={3} className="shrink-0 text-primary" />
+                              : <GitBranch size={12} className="shrink-0 text-default-400" />}
+                            <span className="truncate pr-5 text-xs">{name}</span>
                           </button>
                           <Dropdown>
                             <Dropdown.Trigger>
                               <button className="opacity-0 group-hover:opacity-100 absolute right-1 p-0.5 rounded hover:bg-default-200 transition-all" aria-label="Branch Actions">
-                                <MoreVertical size={14} className="text-default-400" />
+                                <MoreVertical size={13} className="text-default-400" />
                               </button>
                             </Dropdown.Trigger>
                             <Dropdown.Popover>
@@ -495,40 +695,78 @@ export default function App() {
                       );
                     })}
                   </div>
-                  <div>
-                    <p className="text-xs font-semibold text-default-400 uppercase tracking-wider mb-1.5 px-1">Remote</p>
-                    {t.branches.filter(b => b.includes("remotes/") && !b.includes("->")).map(b => {
-                      const name = b.trim().replace("remotes/", "");
-                      return (
-                        <button
-                          key={b}
-                          className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-default-500 hover:bg-default-100 transition-colors text-left"
-                          onClick={() => handleCheckout(t.path, b.trim())}
-                          title={name}
-                        >
-                          <RefreshCw size={13} className="shrink-0 text-default-400" />
-                          <span className="truncate">{name}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
+
+                  {/* Remote branches */}
+                  {remoteBranches.length > 0 && (
+                    <div className="mt-2">
+                      <div className="flex items-center gap-1.5 px-3 py-1.5 mb-0.5">
+                        <span className="panel-title">Remote</span>
+                        <span className="count-pill">{remoteBranches.length}</span>
+                      </div>
+                      {remoteBranches.map(b => {
+                        const name = b.trim().replace("remotes/", "");
+                        return (
+                          <button
+                            key={b}
+                            className="branch-row w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-left mx-1.5 mb-0.5"
+                            style={{ width: "calc(100% - 12px)" }}
+                            onClick={() => handleCheckout(t.path, b.trim())}
+                            title={name}
+                          >
+                            <RefreshCw size={12} className="shrink-0 text-default-400" />
+                            <span className="truncate text-xs text-default-500">{name}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               </div>
 
               {/* Changes panel */}
-              <div className="w-60 shrink-0 flex flex-col liquid-glass-panel z-10">
+              <div className="w-64 shrink-0 flex flex-col liquid-glass-panel z-10">
+                <div className="panel-header px-3 py-2.5 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="panel-title">Changes</span>
+                    <span className="count-pill">{t.modifiedFiles.length}</span>
+                  </div>
+                  {t.modifiedFiles.length > 0 && (
+                    <button
+                      className="discard-all-button"
+                      onClick={() => discardAllChanges(t.path)}
+                      disabled={!!t.loading["Discard All"]}
+                      title="Discard all changes"
+                      aria-label="Discard all changes"
+                    >
+                      {t.loading["Discard All"] ? <Spinner size="sm" color="current" /> : <Trash2 size={13} />}
+                      <span>Discard All</span>
+                    </button>
+                  )}
+                </div>
                 <div className="flex-1 overflow-y-auto p-3">
-                  <p className="text-xs font-semibold text-default-400 uppercase tracking-wider mb-2">Changes</p>
                   {t.modifiedFiles.length === 0
-                    ? <p className="text-sm text-default-400">No changes</p>
+                    ? <p className="empty-state text-sm text-center">No working tree changes</p>
                     : t.modifiedFiles.map(file => (
-                      <button
+                      <div
                         key={file}
-                        className={`text-sm w-full text-left px-2 py-1.5 rounded-md transition-colors break-all mb-1 ${t.selectedFile === file ? "bg-primary text-primary-foreground" : "hover:bg-default-100 text-default-600"}`}
-                        onClick={() => selectFile(t.path, file)}
+                        className={`change-row text-sm w-full text-left rounded-md mb-1.5 ${t.selectedFile === file ? "change-row-active" : "text-default-600"}`}
                       >
-                        {file}
-                      </button>
+                        <button
+                          className="change-row-select"
+                          onClick={() => selectFile(t.path, file)}
+                          title={file}
+                        >
+                          <span className="change-row-label truncate">{file}</span>
+                        </button>
+                        <button
+                          className="change-discard-button"
+                          onClick={() => discardFile(t.path, file)}
+                          disabled={!!t.loading["Discard"]}
+                          aria-label={`Discard changes in ${file}`}
+                        >
+                          <RotateCcw size={13} />
+                        </button>
+                      </div>
                     ))
                   }
                 </div>
@@ -539,16 +777,15 @@ export default function App() {
 
                 {/* Behind-remote banner */}
                 {t.behindCount > 0 && (
-                  <div className="shrink-0 flex items-center gap-3 px-4 py-2 border-b" style={{ background: "#fffbeb", borderColor: "#fde68a", color: "#92400e" }}>
-                    <ArrowDownToLine size={15} className="shrink-0" />
-                    <span className="text-sm flex-1">
-                      Your branch is <strong>{t.behindCount} commit{t.behindCount > 1 ? "s" : ""}</strong> behind the remote — pull to update.
+                  <div className="behind-banner shrink-0 flex items-center gap-3 px-4 py-2">
+                    <ArrowDownToLine size={14} className="shrink-0 opacity-70" />
+                    <span className="flex-1">
+                      Your branch is <strong>{t.behindCount} commit{t.behindCount > 1 ? "s" : ""}</strong> behind the remote.
                     </span>
                     <button
                       onClick={() => runCommand(t.path, "git_pull", "Pull", { path: t.path })}
                       disabled={!!t.loading["Pull"]}
-                      className="shrink-0 flex items-center gap-1.5 px-3 py-1 rounded-md text-sm font-medium disabled:opacity-50 transition-colors"
-                      style={{ background: "#f59e0b", color: "#fff" }}
+                      className="behind-pull-button shrink-0 flex items-center gap-1.5 px-3 py-1 rounded-md text-sm font-semibold disabled:opacity-50 transition-colors"
                     >
                       {t.loading["Pull"] ? <Spinner size="sm" color="current" /> : <ArrowDownToLine size={13} />}
                       Pull now
@@ -557,7 +794,7 @@ export default function App() {
                 )}
 
                 {/* Tab bar — History + Diff only, Console moved to bottom */}
-                <div className="flex px-5 pt-3 gap-6 shrink-0 liquid-glass-header z-10 relative">
+                <div className="workspace-tabs flex px-5 pt-3 gap-6 shrink-0 liquid-glass-header z-10 relative">
                   {[
                     { key: "history", icon: <History size={16} />, label: "History" },
                     { key: "diff",    icon: <FileCode size={16} />, label: "Diff", disabled: !t.selectedFile },
@@ -566,7 +803,7 @@ export default function App() {
                       key={tab.key}
                       disabled={(tab as {disabled?: boolean}).disabled}
                       onClick={() => patchTab(t.path, { selectedTab: tab.key as RepoTab["selectedTab"] })}
-                      className={`flex items-center gap-2 px-1 pb-3 text-sm font-medium border-b-[3px] transition-colors ${(tab as {disabled?: boolean}).disabled ? "opacity-40 cursor-not-allowed" : ""} ${t.selectedTab === tab.key ? "border-primary text-primary" : "border-transparent text-default-500 hover:text-default-800"}`}
+                      className={`workspace-tab flex items-center gap-2 px-1 pb-3 text-sm font-semibold ${(tab as {disabled?: boolean}).disabled ? "opacity-40 cursor-not-allowed" : ""} ${t.selectedTab === tab.key ? "workspace-tab-active" : "text-default-500 hover:text-default-800"}`}
                     >
                       {tab.icon}
                       <span>{tab.label}</span>
@@ -586,19 +823,29 @@ export default function App() {
             </div>
 
             {/* ── Bottom Console Panel ── */}
-            <div className="shrink-0 flex flex-col liquid-glass-console z-20 relative" style={{ height: t.consoleOpen ? 200 : 36 }}>
+            <div
+              className="shrink-0 flex flex-col liquid-glass-console z-20 relative"
+              style={{
+                height: t.consoleOpen ? 200 : 34,
+                transition: "height 200ms cubic-bezier(0.4,0,0.2,1)",
+              }}
+            >
               {/* Console header / toggle */}
               <div
-                className="flex items-center gap-2 px-4 bg-transparent hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer select-none shrink-0"
-                style={{ height: 36 }}
+                className="console-toggle flex items-center gap-2 px-3 cursor-pointer select-none shrink-0"
+                style={{ height: 34 }}
                 onClick={() => patchTab(t.path, { consoleOpen: !t.consoleOpen })}
               >
-                <Terminal size={13} className="text-default-500" />
-                <span className="text-xs font-semibold text-default-500 uppercase tracking-wider flex-1">Console</span>
+                <Terminal size={12} className="text-default-500 shrink-0" />
+                <span className="panel-title flex-1">Console</span>
                 {t.logs.length > 0 && (
-                  <span className="text-xs text-default-400">{t.logs.length} entries</span>
+                  <span className="console-count-badge">{t.logs.length}</span>
                 )}
-                <span className="text-default-400 text-xs">{t.consoleOpen ? "▼" : "▲"}</span>
+                <div className="console-chevron-btn">
+                  {t.consoleOpen
+                    ? <ChevronDown size={13} />
+                    : <ChevronUp size={13} />}
+                </div>
               </div>
               {t.consoleOpen && (
                 <div className="flex-1 overflow-hidden">
@@ -614,7 +861,7 @@ export default function App() {
       <Modal isOpen={isBranchModalOpen} onOpenChange={setIsBranchModalOpen}>
         <Modal.Backdrop>
           <Modal.Container placement="center">
-            <Modal.Dialog className="sm:max-w-sm">
+            <Modal.Dialog className="app-modal sm:max-w-sm">
               <Modal.CloseTrigger />
               <Modal.Header><Modal.Heading>Create New Branch</Modal.Heading></Modal.Header>
               <Modal.Body className="p-5">
@@ -631,10 +878,10 @@ export default function App() {
                 </div>
               </Modal.Body>
               <Modal.Footer>
-                <button className="px-4 py-2 text-sm rounded-lg border border-default-200 text-default-600 hover:bg-default-100 transition-colors" onClick={() => setIsBranchModalOpen(false)}>
+                <button className="toolbar-button px-4 py-2 text-sm rounded-lg text-default-600" onClick={() => setIsBranchModalOpen(false)}>
                   Cancel
                 </button>
-                <button className="px-4 py-2 text-sm rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors font-medium" onClick={handleCreateBranch}>
+                <button className="px-4 py-2 text-sm rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors font-semibold" onClick={handleCreateBranch}>
                   Create & Checkout
                 </button>
               </Modal.Footer>
@@ -642,6 +889,34 @@ export default function App() {
           </Modal.Container>
         </Modal.Backdrop>
       </Modal>
+
+      {/* Conflict resolution modal */}
+      {activeTab && (
+        <ConflictModal
+          isOpen={isConflictModalOpen}
+          onClose={() => setIsConflictModalOpen(false)}
+          repoPath={activeTab.path}
+          onResolved={() => handleConflictResolved(activeTab.path)}
+        />
+      )}
+
+      {/* Local changes overwritten modal */}
+      {activeTab && (
+        <LocalChangesModal
+          isOpen={localChangesState.isOpen}
+          onClose={() => setLocalChangesState(prev => ({ ...prev, isOpen: false }))}
+          repoPath={activeTab.path}
+          files={localChangesState.files}
+          command={localChangesState.command}
+          onResolved={() => fullRefresh(activeTab.path)}
+          onAutoStashCreated={(stashOid) => rememberPendingAutoStash(activeTab.path, stashOid)}
+          onAutoStashReleased={() => {
+            clearPendingAutoStash(activeTab.path);
+            addLog(activeTab.path, "success", "Auto stash applied and released.");
+          }}
+          onNeedsConflictResolution={() => setIsConflictModalOpen(true)}
+        />
+      )}
     </div>
   );
 }
@@ -711,7 +986,7 @@ function DiffPanel({ file, diff, loading }: { file: string | null; diff: string;
   const hasContent = parsed.some(l => l.type !== "header");
 
   return (
-    <div className="flex-1 flex flex-col min-h-0">
+    <div className="diff-shell flex-1 flex flex-col min-h-0">
       {/* File header */}
       <div className="px-4 py-2.5 liquid-glass-header flex items-center gap-2 shrink-0">
         <FileCode size={15} className="text-default-400 shrink-0" />
@@ -726,7 +1001,7 @@ function DiffPanel({ file, diff, loading }: { file: string | null; diff: string;
             <p className="text-sm">The file matches the last commit</p>
           </div>
         ) : (
-          <table className="w-full border-collapse text-sm font-mono">
+          <table className="diff-table w-full border-collapse text-sm font-mono">
             <tbody>
               {parsed.map((line, i) => {
                 if (line.type === "header") return null; // skip git header lines

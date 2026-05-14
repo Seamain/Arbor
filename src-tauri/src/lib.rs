@@ -5,7 +5,14 @@ use std::{collections::HashMap, sync::Mutex, time::Duration};
 use tauri::{AppHandle, Emitter, Manager};
 
 // Map from repo path → its debouncer (keeping it alive)
-struct WatcherState(Mutex<HashMap<String, notify_debouncer_mini::Debouncer<notify_debouncer_mini::notify::RecommendedWatcher>>>);
+struct WatcherState(
+    Mutex<
+        HashMap<
+            String,
+            notify_debouncer_mini::Debouncer<notify_debouncer_mini::notify::RecommendedWatcher>,
+        >,
+    >,
+);
 
 #[tauri::command]
 fn watch_repo(app: AppHandle, path: String) -> Result<(), String> {
@@ -19,11 +26,14 @@ fn watch_repo(app: AppHandle, path: String) -> Result<(), String> {
 
     let app_handle = app.clone();
     let path_clone = path.clone();
-    let mut debouncer = new_debouncer(Duration::from_millis(500), move |result: DebounceEventResult| {
-        if result.is_ok() {
-            let _ = app_handle.emit("repo-changed", path_clone.clone());
-        }
-    })
+    let mut debouncer = new_debouncer(
+        Duration::from_millis(500),
+        move |result: DebounceEventResult| {
+            if result.is_ok() {
+                let _ = app_handle.emit("repo-changed", path_clone.clone());
+            }
+        },
+    )
     .map_err(|e| e.to_string())?;
 
     debouncer
@@ -76,7 +86,20 @@ pub fn run() {
             git_ops::git_rebase,
             git_ops::git_merge,
             git_ops::git_head_oid,
-            git_ops::git_log_graph
+            git_ops::git_log_graph,
+            git_ops::git_conflicted_files,
+            git_ops::read_file_content,
+            git_ops::write_file_content,
+            git_ops::git_add,
+            git_ops::git_commit,
+            git_ops::git_stash,
+            git_ops::git_auto_stash,
+            git_ops::git_stash_pop,
+            git_ops::git_stash_drop,
+            git_ops::git_checkout_files,
+            git_ops::git_discard_file,
+            git_ops::git_discard_all_changes,
+            git_ops::git_reset_hard
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
