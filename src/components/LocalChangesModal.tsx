@@ -2,6 +2,7 @@ import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Modal } from "@heroui/react";
 import { ArchiveRestore, Eraser, Trash2 } from "lucide-react";
+import { useT } from "../i18n";
 
 interface LocalChangesModalProps {
   isOpen: boolean;
@@ -31,6 +32,7 @@ export function LocalChangesModal({
   onAutoStashReleased,
   onNeedsConflictResolution,
 }: LocalChangesModalProps) {
+  const t = useT();
   const [loading, setLoading] = useState(false);
 
   // 1. Auto stash and recover: git stash -> git pull -> git stash pop
@@ -104,7 +106,7 @@ export function LocalChangesModal({
         <Modal.Container placement="center">
           <Modal.Dialog className="app-modal max-w-xl">
             <Modal.Header>
-              <Modal.Heading>Local Changes</Modal.Heading>
+              <Modal.Heading>{t.localChangesTitle}</Modal.Heading>
             </Modal.Header>
             <Modal.Body className="p-0 border-b border-default-200">
               <div className="flex flex-col">
@@ -115,8 +117,8 @@ export function LocalChangesModal({
                 >
                   <span className="action-choice-icon"><ArchiveRestore size={17} /></span>
                   <span className="min-w-0">
-                    <span className="block font-semibold text-default-800">Auto Stash and Apply</span>
-                    <span className="block text-sm text-danger mt-1">Conflicts may occur while restoring the stash.</span>
+                    <span className="block font-semibold text-default-800">{t.autoStashAndApply}</span>
+                    <span className="block text-sm text-danger mt-1">{t.autoStashAndApplyDesc}</span>
                   </span>
                 </button>
                 <button
@@ -126,8 +128,8 @@ export function LocalChangesModal({
                 >
                   <span className="action-choice-icon"><Eraser size={17} /></span>
                   <span className="min-w-0">
-                    <span className="block font-semibold text-default-800">Discard Overwritten Changes</span>
-                    <span className="block text-sm text-default-500 mt-1">Only discard files that block the operation.</span>
+                    <span className="block font-semibold text-default-800">{t.discardOverwritten}</span>
+                    <span className="block text-sm text-default-500 mt-1">{t.discardOverwrittenDesc}</span>
                   </span>
                 </button>
                 <button
@@ -137,19 +139,19 @@ export function LocalChangesModal({
                 >
                   <span className="action-choice-icon"><Trash2 size={17} /></span>
                   <span className="min-w-0">
-                    <span className="block font-semibold text-default-800">Discard All Changes</span>
-                    <span className="block text-sm text-danger mt-1">Tracked local changes will be reset.</span>
+                    <span className="block font-semibold text-default-800">{t.discardAllChanges}</span>
+                    <span className="block text-sm text-danger mt-1">{t.discardAllChangesDesc}</span>
                   </span>
                 </button>
               </div>
             </Modal.Body>
             <Modal.Footer>
-              <button 
-                onClick={onClose} 
+              <button
+                onClick={onClose}
                 disabled={loading}
                 className="toolbar-button px-6 py-2 rounded text-default-600 disabled:opacity-50"
               >
-                Close
+                {t.close}
               </button>
             </Modal.Footer>
           </Modal.Dialog>

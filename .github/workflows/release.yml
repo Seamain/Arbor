@@ -1,0 +1,173 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS
+          - platform: macos-x86_64
+            os: macos-13
+            target: x86_64-apple-darwin
+            args: '--target x86_64-apple-darwin --bundles dmg'
+            artifact_name: macos-x86_64-dmg
+            artifact_path: src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+
+          - platform: macos-aarch64
+            os: macos-14
+            target: aarch64-apple-darwin
+            args: '--target aarch64-apple-darwin --bundles dmg'
+            artifact_name: macos-aarch64-dmg
+            artifact_path: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+
+          # Linux
+          - platform: linux-x86_64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            args: '--target x86_64-unknown-linux-gnu --bundles deb,rpm,appimage'
+            artifact_name: linux-x86_64-bundles
+            artifact_path: |
+              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
+              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/rpm/*.rpm
+              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+
+          - platform: linux-aarch64
+            # 使用 GitHub 原生 ARM64 runner 进行 Linux 编译（需仓库为 Public 或配置了 ARM64 Runner）
+            os: ubuntu-24.04-arm64
+            target: aarch64-unknown-linux-gnu
+            args: '--target aarch64-unknown-linux-gnu --bundles deb,rpm,appimage'
+            artifact_name: linux-aarch64-bundles
+            artifact_path: |
+              src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/deb/*.deb
+              src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/rpm/*.rpm
+              src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+
+          # Windows
+          - platform: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            args: '--target x86_64-pc-windows-msvc --bundles msi'
+            artifact_name: windows-x86_64-msi
+            artifact_path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+
+          - platform: windows-aarch64
+            os: windows-latest
+            target: aarch64-pc-windows-msvc
+            args: '--target aarch64-pc-windows-msvc --bundles msi'
+            artifact_name: windows-aarch64-msi
+            artifact_path: src-tauri/target/aarch64-pc-windows-msvc/release/bundle/msi/*.msi
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust / Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install system dependencies (Linux)
+        if: startsWith(matrix.platform, 'linux')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            libglib2.0-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      - name: Build Tauri app
+        run: npx tauri build ${{ matrix.args }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_path }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout (for release notes)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-packages
+          merge-multiple: true
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          PREV_TAG=$(git tag --sort=-version:refname | sed -n '2p')
+          if [ -z "$PREV_TAG" ]; then
+            COMMITS=$(git log --pretty="format:- %s (%h)" HEAD)
+          else
+            COMMITS=$(git log --pretty="format:- %s (%h)" "${PREV_TAG}..HEAD")
+          fi
+          echo "RELEASE_NOTES<<EOF" >> "$GITHUB_OUTPUT"
+          echo "## What's Changed" >> "$GITHUB_OUTPUT"
+          echo "" >> "$GITHUB_OUTPUT"
+          echo "$COMMITS" >> "$GITHUB_OUTPUT"
+          echo "" >> "$GITHUB_OUTPUT"
+          echo "---" >> "$GITHUB_OUTPUT"
+          echo "**Full Changelog:** https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          body: ${{ steps.notes.outputs.RELEASE_NOTES }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: dist-packages/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

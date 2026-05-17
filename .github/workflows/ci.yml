@@ -1,0 +1,105 @@
+# =============================================================================
+# Arbor — Continuous Integration
+#
+# Runs on every push to main/master and on pull requests.
+# Checks: TypeScript type-check + Rust compile (no bundle, fast).
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main, master, dev]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  pull_request:
+    branches: [main, master]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── TypeScript & frontend ────────────────────────────────────────────────────
+  frontend:
+    name: TypeScript check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Build frontend
+        run: npm run build
+
+  # ── Rust / Tauri backend ─────────────────────────────────────────────────────
+  rust:
+    name: Rust check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js (needed for Tauri build context)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install JS deps
+        run: npm ci
+
+      - name: Build frontend (Tauri needs dist/)
+        run: npm run build
+
+      - name: Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev
+
+      - name: Cargo check
+        working-directory: src-tauri
+        run: cargo check --all-features
+
+      - name: Cargo clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-features -- -D warnings
+        continue-on-error: true   # warnings-as-errors can be tightened later

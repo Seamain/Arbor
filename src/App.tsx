@@ -8,15 +8,25 @@ import {
   Terminal, FolderOpen, FileCode, GitBranch, Plus, Check,
   MoreVertical, History, X, GitCommitHorizontal, Clock, TriangleAlert,
   ChevronDown, ChevronUp, RotateCcw, Trash2, PanelLeftClose, PanelLeftOpen,
+  ArchiveRestore, Eye, GitMerge, Settings, UserCircle2, Download,
 } from "lucide-react";
 import "./App.css";
 import { GitGraphViewer } from "./components/GitGraphViewer";
 import { ConflictModal } from "./components/ConflictModal";
 import { LocalChangesModal } from "./components/LocalChangesModal";
+import { ContextMenu } from "./components/ContextMenu";
+import { SettingsModal } from "./components/SettingsModal";
+import { AppSettings, loadSettings, saveSettings } from "./settings";
+import { ensureNotificationPermission, notify } from "./notify";
+import { GitProvider, loadProviders, saveProviders, matchRemoteToProvider, createPrUrl } from "./providers";
+import { ProvidersModal } from "./components/ProvidersModal";
+import { CloneModal } from "./components/CloneModal";
+import { PullRequestsPanel } from "./components/PullRequestsPanel";
+import { I18nContext, getTranslations } from "./i18n";
 
 // ─── persistence ────────────────────────────────────────────────────────────
-const HISTORY_KEY = "git-client-repo-history";
-const PENDING_AUTO_STASHES_KEY = "git-client-pending-auto-stashes";
+const HISTORY_KEY = "arbor-repo-history";
+const PENDING_AUTO_STASHES_KEY = "arbor-pending-auto-stashes";
 const MAX_HISTORY = 12;
 
 function loadHistory(): string[] {
@@ -62,6 +72,7 @@ interface RepoTab {
   fileDiff: string;
   selectedTab: "history" | "diff";
   consoleOpen: boolean;
+  remoteUrl: string | null;  // origin remote URL, fetched once on open
 }
 
 function makeTab(path: string): RepoTab {
@@ -71,7 +82,7 @@ function makeTab(path: string): RepoTab {
     status: "", headOid: "", headBranch: "", behindCount: 0, hasConflicts: false,
     branches: [], modifiedFiles: [], historyLogs: [],
     logs: [], loading: {}, selectedFile: null, fileDiff: "",
-    selectedTab: "history", consoleOpen: false,
+    selectedTab: "history", consoleOpen: false, remoteUrl: null,
   };
 }
 
@@ -122,12 +133,173 @@ export default function App() {
   const [localChangesState, setLocalChangesState] = useState<{isOpen: boolean, files: string[], command: string}>({ isOpen: false, files: [], command: "" });
   const [newBranchName, setNewBranchName] = useState("");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settings, setSettings] = useState<AppSettings>(loadSettings);
+  const [providers, setProviders] = useState<GitProvider[]>(loadProviders);
+  const [isProvidersOpen, setIsProvidersOpen] = useState(false);
+  const [isCloneOpen, setIsCloneOpen] = useState(false);
+
+  function handleSaveSettings(s: AppSettings) {
+    setSettings(s);
+    saveSettings(s);
+    // Apply font size immediately
+    document.documentElement.style.fontSize = `${s.fontSize}px`;
+    // Apply glass intensity
+    document.documentElement.setAttribute("data-glass", s.glassIntensity);
+    // Apply theme
+    const theme = s.theme === "system"
+      ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+      : s.theme;
+    document.documentElement.setAttribute("data-theme", theme);
+  }
+
+  // Apply settings on first render
+  useEffect(() => {
+    handleSaveSettings(settings);
+    // Request notification permission early so the macOS system dialog
+    // appears at startup rather than mid-operation.
+    ensureNotificationPermission().catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Context menu state ──────────────────────────────────────────────────
+  type CtxMenuItem = { label: string; icon?: React.ReactNode; danger?: boolean; divider?: boolean; onClick: () => void };
+  type CtxMenuState = { x: number; y: number; items: CtxMenuItem[] } | null;
+  const [ctxMenu, setCtxMenu] = useState<CtxMenuState>(null);
+
+  // ── File list context menu ───────────────────────────────────────────────
+  function openFileCtxMenu(e: React.MouseEvent, path: string, file: string) {
+    e.preventDefault();
+    const items: CtxMenuItem[] = [
+      {
+        label: "View Diff",
+        icon: <Eye size={13} />,
+        onClick: () => selectFile(path, file),
+      },
+    ];
+    // "Open in Editor" — only show when an editor is configured
+    if (settings.externalEditor) {
+      items.push({
+        label: `Open in ${settings.externalEditor}`,
+        icon: <FileCode size={13} />,
+        onClick: () => invoke("open_in_editor", {
+          editor: settings.externalEditor,
+          filePath: `${path}/${file}`,
+        }).catch(() => {}),
+      });
+    }
+    items.push({ divider: true, label: "", onClick: () => {} });
+    items.push({
+      label: "Discard Changes",
+      icon: <RotateCcw size={13} />,
+      danger: true,
+      onClick: () => discardFile(path, file),
+    });
+    setCtxMenu({ x: e.clientX, y: e.clientY, items });
+  }
+
+  // ── Branch context menu ──────────────────────────────────────────────────
+  function openBranchCtxMenu(e: React.MouseEvent, path: string, branchName: string, isCurrent: boolean) {
+    e.preventDefault();
+    const items: CtxMenuItem[] = [];
+
+    // Copy branch name is always available
+    items.push({
+      label: "Copy branch name",
+      icon: <Check size={13} />,
+      onClick: () => navigator.clipboard.writeText(branchName).catch(() => {}),
+    });
+
+    if (!isCurrent) {
+      items.push({ divider: true, label: "", onClick: () => {} });
+      items.push({
+        label: "Checkout",
+        icon: <GitBranch size={13} />,
+        onClick: () => handleCheckout(path, branchName),
+      });
+      items.push({
+        label: "Merge (Fast-Forward) into current",
+        icon: <GitMerge size={13} />,
+        onClick: () => handleBranchAction(path, "merge-ff", branchName),
+      });
+      items.push({
+        label: "Merge (No-FF) into current",
+        icon: <GitMerge size={13} />,
+        onClick: () => handleBranchAction(path, "merge-noff", branchName),
+      });
+      items.push({
+        label: `Rebase current onto ${branchName}`,
+        icon: <ArchiveRestore size={13} />,
+        onClick: () => handleBranchAction(path, "rebase", branchName),
+      });
+      items.push({ divider: true, label: "", onClick: () => {} });
+      items.push({
+        label: "Delete Branch",
+        icon: <Trash2 size={13} />,
+        danger: true,
+        onClick: () => handleBranchAction(path, "delete", branchName),
+      });
+    }
+    setCtxMenu({ x: e.clientX, y: e.clientY, items });
+  }
+
+  // ── Tab strip context menu ───────────────────────────────────────────────
+  function openTabCtxMenu(e: React.MouseEvent, tabPath: string) {
+    e.preventDefault();
+    setCtxMenu({
+      x: e.clientX, y: e.clientY,
+      items: [
+        {
+          label: "Refresh",
+          icon: <RefreshCw size={13} />,
+          onClick: () => fullRefresh(tabPath),
+        },
+        {
+          label: "Fetch",
+          icon: <ArrowDownToLine size={13} />,
+          onClick: () => runCommand(tabPath, "git_fetch", "Fetch", { path: tabPath }),
+        },
+        { divider: true, label: "", onClick: () => {} },
+        {
+          label: "Close Tab",
+          icon: <X size={13} />,
+          danger: true,
+          onClick: () => closeTab(tabPath),
+        },
+      ],
+    });
+  }
+
+  // ── History graph context menu ───────────────────────────────────────────
+  function openHistoryCtxMenu(e: React.MouseEvent, path: string) {
+    e.preventDefault();
+    setCtxMenu({
+      x: e.clientX, y: e.clientY,
+      items: [
+        {
+          label: "Refresh History",
+          icon: <History size={13} />,
+          onClick: () => fullRefresh(path),
+        },
+        {
+          label: "Fetch All",
+          icon: <RefreshCw size={13} />,
+          onClick: () => runCommand(path, "git_fetch", "Fetch", { path }),
+        },
+      ],
+    });
+  }
 
   const activeTab = tabs.find(t => t.path === activeTabPath) ?? null;
   const tabsRef = useRef(tabs);
   const pendingAutoStashesRef = useRef(pendingAutoStashes);
+  const activeTabPathRef = useRef(activeTabPath);
+  const settingsRef = useRef(settings);
+  const providersRef = useRef(providers);
   useEffect(() => { tabsRef.current = tabs; }, [tabs]);
   useEffect(() => { pendingAutoStashesRef.current = pendingAutoStashes; }, [pendingAutoStashes]);
+  useEffect(() => { activeTabPathRef.current = activeTabPath; }, [activeTabPath]);
+  useEffect(() => { settingsRef.current = settings; }, [settings]);
+  useEffect(() => { providersRef.current = providers; }, [providers]);
 
   // After a fullRefresh completes, block silentRefresh for this many ms
   // so file-watcher events triggered by the git operation itself can't
@@ -213,6 +385,58 @@ export default function App() {
     return () => { unlisten?.(); };
   }, [silentRefresh]);
 
+  // ── Native menu bar event listener ──────────────────────────────────────
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<string>("menu-action", (event) => {
+      const id = event.payload;
+      const active = tabsRef.current.find(t => t.path === activeTabPathRef.current) ?? null;
+      switch (id) {
+        case "file_open":
+          pickFolder();
+          break;
+        case "file_close":
+          if (active) closeTab(active.path);
+          break;
+        case "repo_fetch":
+          if (active) runCommand(active.path, "git_fetch", "Fetch", { path: active.path });
+          break;
+        case "repo_pull":
+          if (active) runCommand(active.path, "git_pull", "Pull", { path: active.path });
+          break;
+        case "repo_push":
+          if (active) runCommand(active.path, "git_push", "Push", { path: active.path });
+          break;
+        case "repo_refresh":
+          if (active) fullRefresh(active.path);
+          break;
+        case "repo_new_branch":
+          setIsBranchModalOpen(true);
+          break;
+        case "repo_stash":
+          if (active) runCommand(active.path, "git_stash", "Stash", { path: active.path });
+          break;
+        case "view_history":
+          if (active) patchTab(active.path, { selectedTab: "history" });
+          break;
+        case "view_diff":
+          if (active && active.selectedFile) patchTab(active.path, { selectedTab: "diff" });
+          break;
+        case "view_console":
+          if (active) patchTab(active.path, { consoleOpen: !active.consoleOpen });
+          break;
+        case "view_sidebar":
+          setSidebarCollapsed(prev => !prev);
+          break;
+        case "app_settings":
+          setIsSettingsOpen(true);
+          break;
+      }
+    }).then(fn => { unlisten = fn; });
+    return () => { unlisten?.(); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ── open / close repo ────────────────────────────────────────────────────
   async function openRepo(path: string) {
     if (tabs.some(t => t.path === path)) { setActiveTabPath(path); return; }
@@ -223,6 +447,10 @@ export default function App() {
     pushHistory(path);
     setHistory(loadHistory());
     invoke("watch_repo", { path }).catch(() => {});
+    // Fetch remote URL in background for PR panel
+    invoke<string>("git_remote_url", { path })
+      .then(url => patchTab(path, { remoteUrl: url }))
+      .catch(() => {});
     await fullRefresh(path);
   }
 
@@ -276,6 +504,24 @@ export default function App() {
     try {
       const result = await invoke<string>(command, args);
       addLog(path, "success", result || `Success: ${name}`);
+      // Send system notification for push/pull if enabled in settings
+      const repoName = path.split("/").filter(Boolean).pop() ?? path;
+      if (name === "Push") {
+        if (settingsRef.current.notifyOnPush) {
+          notify("Push successful", `${repoName} pushed to remote`).catch(() => {});
+        }
+        // Show "Create PR" link if this repo is connected to a provider
+        const tab = tabsRef.current.find(t => t.path === path);
+        if (tab?.remoteUrl && tab.headBranch) {
+          const match = matchRemoteToProvider(tab.remoteUrl, providersRef.current);
+          if (match) {
+            const prUrl = createPrUrl(match.provider, match.repoFullName, tab.headBranch);
+            addLog(path, "info", `Create PR → ${prUrl}`);
+          }
+        }
+      } else if (name === "Pull" && settingsRef.current.notifyOnPull) {
+        notify("Pull successful", `${repoName} pulled from remote`).catch(() => {});
+      }
       if (!["Status", "History"].includes(name)) fullRefresh(path);
       return result;
     } catch (e) {
@@ -394,13 +640,21 @@ export default function App() {
   }
 
   // ─── render ──────────────────────────────────────────────────────────────
-  const t = activeTab;
-  const isAnyLoading = t ? Object.values(t.loading).some(Boolean) : false;
-  const localBranches = t ? t.branches.filter(b => !b.includes("remotes/")) : [];
-  const remoteBranches = t ? t.branches.filter(b => b.includes("remotes/") && !b.includes("->")) : [];
-  const currentBranchLabel = t?.headBranch && t.headBranch !== "HEAD" ? t.headBranch : "detached";
+  const tab = activeTab;
+  const isAnyLoading = tab ? Object.values(tab.loading).some(Boolean) : false;
+  const localBranches = tab ? tab.branches.filter(b => !b.includes("remotes/")) : [];
+  const remoteBranches = tab ? tab.branches.filter(b => b.includes("remotes/") && !b.includes("->")) : [];
+  const currentBranchLabel = tab?.headBranch && tab.headBranch !== "HEAD" ? tab.headBranch : "detached";
+
+  // Derive the connected provider + repo name for the active tab
+  const activeProviderMatch = tab?.remoteUrl
+    ? matchRemoteToProvider(tab.remoteUrl, providers)
+    : null;
+
+  const tr = getTranslations(settings.language ?? "en");
 
   return (
+    <I18nContext.Provider value={tr}>
     <div className="h-screen w-screen flex text-foreground overflow-hidden liquid-glass-base">
 
       {/* ── Left sidebar ── */}
@@ -423,12 +677,12 @@ export default function App() {
         ) : (
           /* Expanded: brand mark + title + collapse button */
           <div className="app-brand px-3 py-3 border-b border-default-200/50 flex items-center gap-2.5">
-            <div className="app-brand-mark shrink-0" title="Git Client">
+            <div className="app-brand-mark shrink-0" title="Arbor">
               <FolderGit2 size={17} />
             </div>
             <div className="min-w-0 flex-1">
-              <span className="block font-semibold text-base text-default-900 truncate">Git Client</span>
-              <span className="block text-xs text-default-400 truncate">Repository workbench</span>
+              <span className="block font-semibold text-base text-default-900 truncate">Arbor</span>
+              <span className="block text-xs text-default-400 truncate">Git repository client</span>
             </div>
             <button
               onClick={() => setSidebarCollapsed(true)}
@@ -441,25 +695,44 @@ export default function App() {
           </div>
         )}
 
-        {/* Open button */}
-        <div className="p-2.5 border-b border-default-200/50">
+        {/* Open / Clone buttons */}
+        <div className="p-2.5 border-b border-default-200/50 flex flex-col gap-1.5">
           {sidebarCollapsed ? (
-            <button
-              onClick={pickFolder}
-              className="primary-action w-full flex items-center justify-center p-2 rounded-lg"
-              title="Open Folder"
-              aria-label="Open Folder"
-            >
-              <FolderOpen size={16} />
-            </button>
+            <>
+              <button
+                onClick={pickFolder}
+                className="primary-action w-full flex items-center justify-center p-2 rounded-lg"
+                title="Open Folder"
+                aria-label="Open Folder"
+              >
+                <FolderOpen size={16} />
+              </button>
+              <button
+                onClick={() => setIsCloneOpen(true)}
+                className="w-full flex items-center justify-center p-2 rounded-lg hover:bg-default-200 transition-colors text-default-500"
+                title="Clone Repository"
+                aria-label="Clone Repository"
+              >
+                <Download size={15} />
+              </button>
+            </>
           ) : (
-            <button
-              onClick={pickFolder}
-              className="primary-action w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm font-semibold text-default-800"
-            >
-              <FolderOpen size={15} />
-              Open Folder
-            </button>
+            <>
+              <button
+                onClick={pickFolder}
+                className="primary-action w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm font-semibold text-default-800"
+              >
+                <FolderOpen size={15} />
+                {tr.openFolder}
+              </button>
+              <button
+                onClick={() => setIsCloneOpen(true)}
+                className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-default-600 hover:bg-default-200 transition-colors border border-default-200/70"
+              >
+                <Download size={14} />
+                {tr.clone}
+              </button>
+            </>
           )}
         </div>
 
@@ -476,6 +749,7 @@ export default function App() {
                 key={tab.path}
                 className={`repo-tab group flex items-center gap-2 mx-2 px-2.5 py-2 rounded-lg cursor-pointer ${isActive ? "repo-tab-active text-default-900" : "text-default-600"}`}
                 onClick={() => setActiveTabPath(tab.path)}
+                onContextMenu={e => openTabCtxMenu(e, tab.path)}
                 title={tab.path}
               >
                 {tabLoading
@@ -497,6 +771,53 @@ export default function App() {
               </div>
             );
           })}
+        </div>
+
+        {/* Accounts + Settings — pinned to bottom of sidebar */}
+        <div className="border-t border-default-200/50 p-2 flex flex-col gap-0.5">
+          {sidebarCollapsed ? (
+            <>
+              <button
+                onClick={() => setIsProvidersOpen(true)}
+                className="w-full flex items-center justify-center p-2 rounded-lg hover:bg-default-200 transition-colors text-default-500 relative"
+                title="Git Accounts"
+                aria-label="Git Accounts"
+              >
+                <UserCircle2 size={15} />
+                {providers.length > 0 && (
+                  <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-success" />
+                )}
+              </button>
+              <button
+                onClick={() => setIsSettingsOpen(true)}
+                className="w-full flex items-center justify-center p-2 rounded-lg hover:bg-default-200 transition-colors text-default-500"
+                title="Settings"
+                aria-label="Settings"
+              >
+                <Settings size={15} />
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                onClick={() => setIsProvidersOpen(true)}
+                className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-default-200 transition-colors text-default-500 text-sm"
+              >
+                <UserCircle2 size={15} />
+                <span className="flex-1 text-left">{tr.gitAccounts}</span>
+                {providers.length > 0 && (
+                  <span className="text-xs font-medium text-success">{providers.length}</span>
+                )}
+              </button>
+              <button
+                onClick={() => setIsSettingsOpen(true)}
+                className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-default-200 transition-colors text-default-500 text-sm"
+              >
+                <Settings size={15} />
+                {tr.settings}
+              </button>
+            </>
+          )}
         </div>
 
         {/* Recent history — hidden when collapsed */}
@@ -539,22 +860,22 @@ export default function App() {
       <div className="flex-1 flex flex-col min-w-0">
 
         {/* Welcome screen */}
-        {!t && (
+        {!tab && (
           <div className="flex-1 flex flex-col items-center justify-center gap-8 p-12 text-center">
             <div className="welcome-surface w-full max-w-xl p-8 flex flex-col items-center gap-4">
               <div className="welcome-icon">
                 <FolderGit2 size={30} />
               </div>
               <div>
-                <h2 className="text-2xl font-semibold text-default-800">Open a Git Repository</h2>
+                <h2 className="text-2xl font-semibold text-default-800">{tr.welcomeTitle}</h2>
                 <p className="text-base text-default-500 max-w-sm mt-2">
-                  Focus on a repository and keep history, branches, and changes in view.
+                  {tr.welcomeOpen}
                 </p>
               </div>
             </div>
             {history.length > 0 && (
               <div className="w-full max-w-lg">
-                <p className="panel-title mb-3 text-left">Recent Repositories</p>
+                <p className="panel-title mb-3 text-left">{tr.gitGraph}</p>
                 <ul className="space-y-1.5">
                   {history.map(p => {
                     const label = p.split("/").filter(Boolean).pop() ?? p;
@@ -580,7 +901,7 @@ export default function App() {
         )}
 
         {/* Repo view */}
-        {t && (
+        {tab && (
           <>
             {/* Top bar */}
             <header className="repo-toolbar shrink-0">
@@ -591,45 +912,45 @@ export default function App() {
               )}
               <div className="flex items-center gap-3 px-4 py-2.5">
                 <div className="flex-1 min-w-0 flex items-center gap-2">
-                  <p className="repo-path truncate" title={t.path}>{t.path}</p>
+                  <p className="repo-path truncate" title={tab.path}>{tab.path}</p>
                   <span className="status-chip status-chip-branch">
                     <GitBranch size={13} />
                     {currentBranchLabel}
                   </span>
-                  <span className={`status-chip ${t.modifiedFiles.length > 0 ? "status-chip-warning" : ""}`}>
+                  <span className={`status-chip ${tab.modifiedFiles.length > 0 ? "status-chip-warning" : ""}`}>
                     <FileCode size={13} />
-                    {t.modifiedFiles.length} changed
+                    {tab.modifiedFiles.length} changed
                   </span>
-                  {t.behindCount > 0 && (
+                  {tab.behindCount > 0 && (
                     <span className="status-chip status-chip-warning">
                       <ArrowDownToLine size={13} />
-                      {t.behindCount} behind
+                      {tab.behindCount} behind
                     </span>
                   )}
                 </div>
                 <div className="flex gap-1.5 shrink-0">
-                  {t.hasConflicts && (
+                  {tab.hasConflicts && (
                     <button
                       onClick={() => setIsConflictModalOpen(true)}
                       className="toolbar-button toolbar-button-danger flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold"
                     >
                       <TriangleAlert size={15} />
-                      Resolve Conflicts
+                      {tr.resolveConflicts}
                     </button>
                   )}
                   {[
-                    { cmd: "git_fetch", name: "Fetch",  icon: <RefreshCw size={15} /> },
-                    { cmd: "git_pull",  name: "Pull",   icon: <ArrowDownToLine size={15} /> },
-                    { cmd: "git_push",  name: "Push",   icon: <ArrowUpFromLine size={15} /> },
-                  ].map(({ cmd, name, icon }) => (
+                    { cmd: "git_fetch", name: "Fetch",  label: tr.fetch,  icon: <RefreshCw size={15} /> },
+                    { cmd: "git_pull",  name: "Pull",   label: tr.pull,   icon: <ArrowDownToLine size={15} /> },
+                    { cmd: "git_push",  name: "Push",   label: tr.push,   icon: <ArrowUpFromLine size={15} /> },
+                  ].map(({ cmd, name, label, icon }) => (
                     <button
                       key={name}
-                      disabled={!!t.loading[name]}
-                      onClick={() => runCommand(t.path, cmd, name, { path: t.path })}
+                      disabled={!!tab.loading[name]}
+                      onClick={() => runCommand(tab.path, cmd, name, { path: tab.path })}
                       className="toolbar-button flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold disabled:opacity-50"
                     >
-                      {t.loading[name] ? <Spinner size="sm" color="current" /> : icon}
-                      {name}
+                      {tab.loading[name] ? <Spinner size="sm" color="current" /> : icon}
+                      {label}
                     </button>
                   ))}
                 </div>
@@ -642,7 +963,7 @@ export default function App() {
               <div className="side-panel w-52 shrink-0 flex flex-col">
                 <div className="panel-header px-3 py-2.5 flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <span className="panel-title">Branches</span>
+                    <span className="panel-title">{tr.branches}</span>
                     <span className="count-pill">{localBranches.length + remoteBranches.length}</span>
                   </div>
                   <button
@@ -664,10 +985,14 @@ export default function App() {
                       const isCurrent = b.startsWith("* ");
                       const name = b.replace("* ", "");
                       return (
-                        <div key={name} className="group relative flex items-center mx-1.5 mb-0.5">
+                        <div
+                          key={name}
+                          className="group relative flex items-center mx-1.5 mb-0.5"
+                          onContextMenu={e => openBranchCtxMenu(e, tab.path, name, isCurrent)}
+                        >
                           <button
                             className={`branch-row flex-1 flex items-center gap-2 px-2.5 py-1.5 rounded-md text-sm text-left ${isCurrent ? "branch-row-current font-semibold" : "text-default-600"}`}
-                            onClick={() => handleCheckout(t.path, name)}
+                            onClick={() => handleCheckout(tab.path, name)}
                             title={name}
                           >
                             {isCurrent
@@ -682,7 +1007,7 @@ export default function App() {
                               </button>
                             </Dropdown.Trigger>
                             <Dropdown.Popover>
-                              <Dropdown.Menu onAction={key => handleBranchAction(t.path, key as string, name)}>
+                              <Dropdown.Menu onAction={key => handleBranchAction(tab.path, key as string, name)}>
                                 <Dropdown.Item key="checkout" textValue="Checkout">Checkout</Dropdown.Item>
                                 <Dropdown.Item key="merge-ff" textValue="Merge (Fast-Forward)">Merge (FF) into current</Dropdown.Item>
                                 <Dropdown.Item key="merge-noff" textValue="Merge (No-FF)">Merge (No-FF) into current</Dropdown.Item>
@@ -710,7 +1035,7 @@ export default function App() {
                             key={b}
                             className="branch-row w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-left mx-1.5 mb-0.5"
                             style={{ width: "calc(100% - 12px)" }}
-                            onClick={() => handleCheckout(t.path, b.trim())}
+                            onClick={() => handleCheckout(tab.path, b.trim())}
                             title={name}
                           >
                             <RefreshCw size={12} className="shrink-0 text-default-400" />
@@ -721,47 +1046,58 @@ export default function App() {
                     </div>
                   )}
                 </div>
+
+                {/* PR / MR panel — only shown when a provider is matched */}
+                {activeProviderMatch && (
+                  <PullRequestsPanel
+                    repoPath={tab.path}
+                    remoteUrl={tab.remoteUrl}
+                    provider={activeProviderMatch.provider}
+                    repoFullName={activeProviderMatch.repoFullName}
+                  />
+                )}
               </div>
 
               {/* Changes panel */}
               <div className="w-64 shrink-0 flex flex-col liquid-glass-panel z-10">
                 <div className="panel-header px-3 py-2.5 flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <span className="panel-title">Changes</span>
-                    <span className="count-pill">{t.modifiedFiles.length}</span>
+                    <span className="panel-title">{tr.localChanges}</span>
+                    <span className="count-pill">{tab.modifiedFiles.length}</span>
                   </div>
-                  {t.modifiedFiles.length > 0 && (
+                  {tab.modifiedFiles.length > 0 && (
                     <button
                       className="discard-all-button"
-                      onClick={() => discardAllChanges(t.path)}
-                      disabled={!!t.loading["Discard All"]}
-                      title="Discard all changes"
-                      aria-label="Discard all changes"
+                      onClick={() => discardAllChanges(tab.path)}
+                      disabled={!!tab.loading["Discard All"]}
+                      title={tr.discardAll}
+                      aria-label={tr.discardAll}
                     >
-                      {t.loading["Discard All"] ? <Spinner size="sm" color="current" /> : <Trash2 size={13} />}
-                      <span>Discard All</span>
+                      {tab.loading["Discard All"] ? <Spinner size="sm" color="current" /> : <Trash2 size={13} />}
+                      <span>{tr.discardAll}</span>
                     </button>
                   )}
                 </div>
                 <div className="flex-1 overflow-y-auto p-3">
-                  {t.modifiedFiles.length === 0
-                    ? <p className="empty-state text-sm text-center">No working tree changes</p>
-                    : t.modifiedFiles.map(file => (
+                  {tab.modifiedFiles.length === 0
+                    ? <p className="empty-state text-sm text-center">{tr.noChanges}</p>
+                    : tab.modifiedFiles.map(file => (
                       <div
                         key={file}
-                        className={`change-row text-sm w-full text-left rounded-md mb-1.5 ${t.selectedFile === file ? "change-row-active" : "text-default-600"}`}
+                        className={`change-row text-sm w-full text-left rounded-md mb-1.5 ${tab.selectedFile === file ? "change-row-active" : "text-default-600"}`}
+                        onContextMenu={e => openFileCtxMenu(e, tab.path, file)}
                       >
                         <button
                           className="change-row-select"
-                          onClick={() => selectFile(t.path, file)}
+                          onClick={() => selectFile(tab.path, file)}
                           title={file}
                         >
                           <span className="change-row-label truncate">{file}</span>
                         </button>
                         <button
                           className="change-discard-button"
-                          onClick={() => discardFile(t.path, file)}
-                          disabled={!!t.loading["Discard"]}
+                          onClick={() => discardFile(tab.path, file)}
+                          disabled={!!tab.loading["Discard"]}
                           aria-label={`Discard changes in ${file}`}
                         >
                           <RotateCcw size={13} />
@@ -776,19 +1112,19 @@ export default function App() {
               <div className="flex-1 flex flex-col min-w-0">
 
                 {/* Behind-remote banner */}
-                {t.behindCount > 0 && (
+                {tab.behindCount > 0 && (
                   <div className="behind-banner shrink-0 flex items-center gap-3 px-4 py-2">
                     <ArrowDownToLine size={14} className="shrink-0 opacity-70" />
                     <span className="flex-1">
-                      Your branch is <strong>{t.behindCount} commit{t.behindCount > 1 ? "s" : ""}</strong> behind the remote.
+                      Your branch is <strong>{tab.behindCount} commit{tab.behindCount > 1 ? "s" : ""}</strong> behind the remote.
                     </span>
                     <button
-                      onClick={() => runCommand(t.path, "git_pull", "Pull", { path: t.path })}
-                      disabled={!!t.loading["Pull"]}
+                      onClick={() => runCommand(tab.path, "git_pull", "Pull", { path: tab.path })}
+                      disabled={!!tab.loading["Pull"]}
                       className="behind-pull-button shrink-0 flex items-center gap-1.5 px-3 py-1 rounded-md text-sm font-semibold disabled:opacity-50 transition-colors"
                     >
-                      {t.loading["Pull"] ? <Spinner size="sm" color="current" /> : <ArrowDownToLine size={13} />}
-                      Pull now
+                      {tab.loading["Pull"] ? <Spinner size="sm" color="current" /> : <ArrowDownToLine size={13} />}
+                      {tr.pull}
                     </button>
                   </div>
                 )}
@@ -796,28 +1132,28 @@ export default function App() {
                 {/* Tab bar — History + Diff only, Console moved to bottom */}
                 <div className="workspace-tabs flex px-5 pt-3 gap-6 shrink-0 liquid-glass-header z-10 relative">
                   {[
-                    { key: "history", icon: <History size={16} />, label: "History" },
-                    { key: "diff",    icon: <FileCode size={16} />, label: "Diff", disabled: !t.selectedFile },
-                  ].map(tab => (
+                    { key: "history", icon: <History size={16} />, label: tr.gitGraph },
+                    { key: "diff",    icon: <FileCode size={16} />, label: "Diff", disabled: !tab.selectedFile },
+                  ].map(wtab => (
                     <button
-                      key={tab.key}
-                      disabled={(tab as {disabled?: boolean}).disabled}
-                      onClick={() => patchTab(t.path, { selectedTab: tab.key as RepoTab["selectedTab"] })}
-                      className={`workspace-tab flex items-center gap-2 px-1 pb-3 text-sm font-semibold ${(tab as {disabled?: boolean}).disabled ? "opacity-40 cursor-not-allowed" : ""} ${t.selectedTab === tab.key ? "workspace-tab-active" : "text-default-500 hover:text-default-800"}`}
+                      key={wtab.key}
+                      disabled={(wtab as {disabled?: boolean}).disabled}
+                      onClick={() => patchTab(tab.path, { selectedTab: wtab.key as RepoTab["selectedTab"] })}
+                      className={`workspace-tab flex items-center gap-2 px-1 pb-3 text-sm font-semibold ${(wtab as {disabled?: boolean}).disabled ? "opacity-40 cursor-not-allowed" : ""} ${tab.selectedTab === wtab.key ? "workspace-tab-active" : "text-default-500 hover:text-default-800"}`}
                     >
-                      {tab.icon}
-                      <span>{tab.label}</span>
+                      {wtab.icon}
+                      <span>{wtab.label}</span>
                     </button>
                   ))}
                 </div>
 
-                {t.selectedTab === "history" && (
-                  <div className="flex-1 overflow-hidden">
-                    <GitGraphViewer logs={t.historyLogs} headOid={t.headOid} headBranch={t.headBranch} />
+                {tab.selectedTab === "history" && (
+                  <div className="flex-1 overflow-hidden" onContextMenu={e => openHistoryCtxMenu(e, tab.path)}>
+                    <GitGraphViewer logs={tab.historyLogs} headOid={tab.headOid} headBranch={tab.headBranch} />
                   </div>
                 )}
-                {t.selectedTab === "diff" && (
-                  <DiffPanel file={t.selectedFile} diff={t.fileDiff} loading={!!t.loading["Diff"]} />
+                {tab.selectedTab === "diff" && (
+                  <DiffPanel file={tab.selectedFile} diff={tab.fileDiff} loading={!!tab.loading["Diff"]} />
                 )}
               </div>
             </div>
@@ -826,7 +1162,7 @@ export default function App() {
             <div
               className="shrink-0 flex flex-col liquid-glass-console z-20 relative"
               style={{
-                height: t.consoleOpen ? 200 : 34,
+                height: tab.consoleOpen ? 200 : 34,
                 transition: "height 200ms cubic-bezier(0.4,0,0.2,1)",
               }}
             >
@@ -834,22 +1170,22 @@ export default function App() {
               <div
                 className="console-toggle flex items-center gap-2 px-3 cursor-pointer select-none shrink-0"
                 style={{ height: 34 }}
-                onClick={() => patchTab(t.path, { consoleOpen: !t.consoleOpen })}
+                onClick={() => patchTab(tab.path, { consoleOpen: !tab.consoleOpen })}
               >
                 <Terminal size={12} className="text-default-500 shrink-0" />
                 <span className="panel-title flex-1">Console</span>
-                {t.logs.length > 0 && (
-                  <span className="console-count-badge">{t.logs.length}</span>
+                {tab.logs.length > 0 && (
+                  <span className="console-count-badge">{tab.logs.length}</span>
                 )}
                 <div className="console-chevron-btn">
-                  {t.consoleOpen
+                  {tab.consoleOpen
                     ? <ChevronDown size={13} />
                     : <ChevronUp size={13} />}
                 </div>
               </div>
-              {t.consoleOpen && (
+              {tab.consoleOpen && (
                 <div className="flex-1 overflow-hidden">
-                  <ConsolePanel logs={t.logs} />
+                  <ConsolePanel logs={tab.logs} />
                 </div>
               )}
             </div>
@@ -863,10 +1199,10 @@ export default function App() {
           <Modal.Container placement="center">
             <Modal.Dialog className="app-modal sm:max-w-sm">
               <Modal.CloseTrigger />
-              <Modal.Header><Modal.Heading>Create New Branch</Modal.Heading></Modal.Header>
+              <Modal.Header><Modal.Heading>{tr.branches}</Modal.Heading></Modal.Header>
               <Modal.Body className="p-5">
                 <div className="flex flex-col gap-2">
-                  <label className="text-sm font-medium text-default-700">Branch Name</label>
+                  <label className="text-sm font-medium text-default-700">{tr.branches}</label>
                   <input
                     autoFocus
                     className="w-full px-3 py-2 rounded-lg border border-default-200 bg-content1 text-sm outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition"
@@ -879,10 +1215,10 @@ export default function App() {
               </Modal.Body>
               <Modal.Footer>
                 <button className="toolbar-button px-4 py-2 text-sm rounded-lg text-default-600" onClick={() => setIsBranchModalOpen(false)}>
-                  Cancel
+                  {tr.cancel}
                 </button>
                 <button className="px-4 py-2 text-sm rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors font-semibold" onClick={handleCreateBranch}>
-                  Create & Checkout
+                  {tr.commit}
                 </button>
               </Modal.Footer>
             </Modal.Dialog>
@@ -917,14 +1253,61 @@ export default function App() {
           onNeedsConflictResolution={() => setIsConflictModalOpen(true)}
         />
       )}
+
+      {/* Context menu */}
+      {ctxMenu && (
+        <ContextMenu
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          items={ctxMenu.items}
+          onClose={() => setCtxMenu(null)}
+        />
+      )}
+
+      {/* Settings modal */}
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        settings={settings}
+        onSave={handleSaveSettings}
+      />
+
+      {/* Git Accounts modal */}
+      <ProvidersModal
+        isOpen={isProvidersOpen}
+        onClose={() => setIsProvidersOpen(false)}
+        providers={providers}
+        onProvidersChange={next => { setProviders(next); saveProviders(next); }}
+      />
+
+      {/* Clone modal */}
+      <CloneModal
+        isOpen={isCloneOpen}
+        onClose={() => setIsCloneOpen(false)}
+        providers={providers}
+        onCloned={repoPath => openRepo(repoPath)}
+      />
     </div>
+    </I18nContext.Provider>
   );
 }
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
+const URL_RE = /(https?:\/\/[^\s]+)/g;
+
 function ConsolePanel({ logs }: { logs: LogEntry[] }) {
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [logs]);
+
+  function renderMessage(msg: string) {
+    const parts = msg.split(URL_RE);
+    return parts.map((part, i) =>
+      URL_RE.test(part)
+        ? <a key={i} href={part} target="_blank" rel="noreferrer" className="console-link underline">{part}</a>
+        : <span key={i}>{part}</span>
+    );
+  }
+
   return (
     <div className="h-full overflow-y-auto p-4 font-mono text-sm space-y-1.5">
       {logs.map(log => (
@@ -935,7 +1318,7 @@ function ConsolePanel({ logs }: { logs: LogEntry[] }) {
           ${log.type === "info"    ? "text-default-400" : ""}
         `}>
           <span className="opacity-40 mr-2">[{new Date(log.id).toLocaleTimeString()}]</span>
-          <span className="whitespace-pre-wrap">{log.message}</span>
+          <span className="whitespace-pre-wrap">{renderMessage(log.message)}</span>
         </div>
       ))}
       <div ref={endRef} />

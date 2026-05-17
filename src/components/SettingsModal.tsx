@@ -1,0 +1,307 @@
+import { useState } from "react";
+import { Modal } from "@heroui/react";
+import { Palette, GitBranch, Code2, Bell, RotateCcw, X } from "lucide-react";
+import {
+  AppSettings, DEFAULT_SETTINGS, Theme, PullStrategy, GlassIntensity, Language,
+} from "../settings";
+import { useT } from "../i18n";
+import { LOCALE_LABELS, LOCALES } from "../i18n";
+
+interface Props {
+  isOpen: boolean;
+  onClose: () => void;
+  settings: AppSettings;
+  onSave: (s: AppSettings) => void;
+}
+
+type Section = "appearance" | "git" | "editor" | "notifications";
+
+// ── small primitives ──────────────────────────────────────────────────────────
+function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <div className="settings-row">
+      <div className="settings-row-label">
+        <span className="settings-label">{label}</span>
+        {hint && <span className="settings-hint">{hint}</span>}
+      </div>
+      <div className="settings-control">{children}</div>
+    </div>
+  );
+}
+
+function Select<T extends string>({
+  value, onChange, options,
+}: {
+  value: T;
+  onChange: (v: T) => void;
+  options: { value: T; label: string }[];
+}) {
+  return (
+    <select
+      className="settings-select"
+      value={value}
+      onChange={e => onChange(e.target.value as T)}
+    >
+      {options.map(o => (
+        <option key={o.value} value={o.value}>{o.label}</option>
+      ))}
+    </select>
+  );
+}
+
+function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      role="switch"
+      aria-checked={checked}
+      className={`settings-toggle ${checked ? "settings-toggle-on" : ""}`}
+      onClick={() => onChange(!checked)}
+    >
+      <span className="settings-toggle-thumb" />
+    </button>
+  );
+}
+
+function TextInput({
+  value, onChange, placeholder,
+}: {
+  value: string; onChange: (v: string) => void; placeholder?: string;
+}) {
+  return (
+    <input
+      className="settings-input"
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      placeholder={placeholder}
+      spellCheck={false}
+    />
+  );
+}
+
+function NumberInput({
+  value, onChange, min, max, step = 1,
+}: {
+  value: number; onChange: (v: number) => void; min: number; max: number; step?: number;
+}) {
+  return (
+    <div className="settings-number-wrap">
+      <input
+        type="range"
+        className="settings-range"
+        min={min} max={max} step={step}
+        value={value}
+        onChange={e => onChange(Number(e.target.value))}
+      />
+      <span className="settings-number-value">{value}</span>
+    </div>
+  );
+}
+
+// ── section panels ────────────────────────────────────────────────────────────
+function AppearanceSection({ s, set }: { s: AppSettings; set: (p: Partial<AppSettings>) => void }) {
+  const t = useT();
+  return (
+    <div className="settings-section-body">
+      <Row label={t.settingsLanguage} hint={t.settingsLanguageHint}>
+        <Select<Language>
+          value={s.language ?? "en"}
+          onChange={v => set({ language: v })}
+          options={LOCALES.map(l => ({ value: l, label: LOCALE_LABELS[l] }))}
+        />
+      </Row>
+      <Row label={t.settingsTheme} hint={t.settingsThemeHint}>
+        <Select<Theme>
+          value={s.theme}
+          onChange={v => set({ theme: v })}
+          options={[
+            { value: "system", label: t.settingsThemeSystem },
+            { value: "light",  label: t.settingsThemeLight },
+            { value: "dark",   label: t.settingsThemeDark },
+          ]}
+        />
+      </Row>
+      <Row label={t.settingsFontSize} hint={t.settingsFontSizePx(s.fontSize)}>
+        <NumberInput value={s.fontSize} onChange={v => set({ fontSize: v })} min={12} max={18} />
+      </Row>
+      <Row label={t.settingsGlassIntensity} hint={t.settingsGlassHint}>
+        <Select<GlassIntensity>
+          value={s.glassIntensity}
+          onChange={v => set({ glassIntensity: v })}
+          options={[
+            { value: "none",   label: t.settingsGlassNone },
+            { value: "low",    label: t.settingsGlassLow },
+            { value: "medium", label: t.settingsGlassMedium },
+            { value: "high",   label: t.settingsGlassHigh },
+          ]}
+        />
+      </Row>
+    </div>
+  );
+}
+
+function GitSection({ s, set }: { s: AppSettings; set: (p: Partial<AppSettings>) => void }) {
+  const t = useT();
+  return (
+    <div className="settings-section-body">
+      <Row label={t.settingsPullStrategy} hint={t.settingsPullHint}>
+        <Select<PullStrategy>
+          value={s.pullStrategy}
+          onChange={v => set({ pullStrategy: v })}
+          options={[
+            { value: "merge",   label: t.settingsPullMerge },
+            { value: "rebase",  label: t.settingsPullRebase },
+            { value: "ff-only", label: t.settingsPullFF },
+          ]}
+        />
+      </Row>
+      <Row label={t.settingsAutoPrune} hint={t.settingsAutoPruneHint}>
+        <Toggle checked={s.autoPruneOnFetch} onChange={v => set({ autoPruneOnFetch: v })} />
+      </Row>
+      <Row label={t.settingsCommitTemplate} hint={t.settingsCommitTemplateHint}>
+        <TextInput
+          value={s.commitMsgTemplate}
+          onChange={v => set({ commitMsgTemplate: v })}
+          placeholder={t.settingsCommitTemplatePlaceholder}
+        />
+      </Row>
+    </div>
+  );
+}
+
+function EditorSection({ s, set }: { s: AppSettings; set: (p: Partial<AppSettings>) => void }) {
+  const t = useT();
+  return (
+    <div className="settings-section-body">
+      <Row label={t.settingsExternalEditor} hint={t.settingsExternalEditorHint}>
+        <TextInput
+          value={s.externalEditor}
+          onChange={v => set({ externalEditor: v })}
+          placeholder={t.settingsExternalEditorPlaceholder}
+        />
+      </Row>
+      <Row label={t.settingsExternalDiff} hint={t.settingsExternalDiffHint}>
+        <TextInput
+          value={s.externalDiffTool}
+          onChange={v => set({ externalDiffTool: v })}
+          placeholder={t.settingsExternalDiffPlaceholder}
+        />
+      </Row>
+    </div>
+  );
+}
+
+function NotificationsSection({ s, set }: { s: AppSettings; set: (p: Partial<AppSettings>) => void }) {
+  const t = useT();
+  return (
+    <div className="settings-section-body">
+      <Row label={t.settingsFileWatcher} hint={t.settingsFileWatcherHint}>
+        <Toggle checked={s.fileWatcherEnabled} onChange={v => set({ fileWatcherEnabled: v })} />
+      </Row>
+      <Row label={t.settingsWatcherDebounce} hint={t.settingsWatcherDebounceHint(s.fileWatcherDebounceMs)}>
+        <NumberInput
+          value={s.fileWatcherDebounceMs}
+          onChange={v => set({ fileWatcherDebounceMs: v })}
+          min={200} max={5000} step={100}
+        />
+      </Row>
+      <Row label={t.settingsNotifyPush} hint={t.settingsNotifyPushHint}>
+        <Toggle checked={s.notifyOnPush} onChange={v => set({ notifyOnPush: v })} />
+      </Row>
+      <Row label={t.settingsNotifyPull} hint={t.settingsNotifyPullHint}>
+        <Toggle checked={s.notifyOnPull} onChange={v => set({ notifyOnPull: v })} />
+      </Row>
+    </div>
+  );
+}
+
+// ── main component ────────────────────────────────────────────────────────────
+export function SettingsModal({ isOpen, onClose, settings, onSave }: Props) {
+  const t = useT();
+  const [draft, setDraft] = useState<AppSettings>(settings);
+  const [activeSection, setActiveSection] = useState<Section>("appearance");
+
+  const SECTIONS: { id: Section; label: string; icon: React.ReactNode }[] = [
+    { id: "appearance",    label: t.settingsAppearance,    icon: <Palette size={15} /> },
+    { id: "git",          label: t.settingsGitBehaviour,   icon: <GitBranch size={15} /> },
+    { id: "editor",       label: t.settingsEditorTools,    icon: <Code2 size={15} /> },
+    { id: "notifications",label: t.settingsNotifications,  icon: <Bell size={15} /> },
+  ];
+
+  function handleOpen() {
+    setDraft(settings);
+    setActiveSection("appearance");
+  }
+
+  function patch(partial: Partial<AppSettings>) {
+    setDraft(prev => ({ ...prev, ...partial }));
+  }
+
+  function handleSave() {
+    onSave(draft);
+    onClose();
+  }
+
+  function handleReset() {
+    if (confirm(t.settingsResetConfirm)) {
+      setDraft({ ...DEFAULT_SETTINGS });
+    }
+  }
+
+  return (
+    <Modal isOpen={isOpen} onOpenChange={open => { if (!open) onClose(); else handleOpen(); }}>
+      <Modal.Backdrop>
+        <Modal.Container placement="center">
+          <Modal.Dialog className="app-modal settings-modal">
+            {/* Header */}
+            <div className="settings-header">
+              <span className="settings-title">{t.settingsTitle}</span>
+              <button className="settings-close-btn" onClick={onClose} aria-label={t.close}>
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="settings-body">
+              {/* Sidebar nav */}
+              <nav className="settings-nav">
+                {SECTIONS.map(sec => (
+                  <button
+                    key={sec.id}
+                    className={`settings-nav-item ${activeSection === sec.id ? "settings-nav-item-active" : ""}`}
+                    onClick={() => setActiveSection(sec.id)}
+                  >
+                    <span className="settings-nav-icon">{sec.icon}</span>
+                    {sec.label}
+                  </button>
+                ))}
+              </nav>
+
+              {/* Content */}
+              <div className="settings-content">
+                {activeSection === "appearance"    && <AppearanceSection    s={draft} set={patch} />}
+                {activeSection === "git"           && <GitSection           s={draft} set={patch} />}
+                {activeSection === "editor"        && <EditorSection        s={draft} set={patch} />}
+                {activeSection === "notifications" && <NotificationsSection s={draft} set={patch} />}
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="settings-footer">
+              <button className="settings-reset-btn" onClick={handleReset}>
+                <RotateCcw size={13} />
+                {t.settingsResetDefaults}
+              </button>
+              <div className="flex gap-2">
+                <button className="toolbar-button px-4 py-2 text-sm rounded-lg text-default-600" onClick={onClose}>
+                  {t.cancel}
+                </button>
+                <button className="settings-save-btn" onClick={handleSave}>
+                  {t.save}
+                </button>
+              </div>
+            </div>
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
+    </Modal>
+  );
+}

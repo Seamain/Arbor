@@ -732,3 +732,72 @@ pub async fn git_reset_hard(path: String) -> Result<String, String> {
         Err(String::from_utf8_lossy(&output.stderr).to_string())
     }
 }
+
+#[tauri::command]
+pub async fn open_in_editor(editor: String, file_path: String) -> Result<(), String> {
+    Command::new(&editor)
+        .arg(&file_path)
+        .spawn()
+        .map_err(|e| format!("Failed to launch '{}': {}", editor, e))?;
+    Ok(())
+}
+
+/// Clone a repository into `dest_dir/<repo_name>`.
+/// `clone_url` should already contain embedded credentials if needed.
+/// Returns the full path of the cloned directory.
+#[tauri::command]
+pub async fn git_clone(clone_url: String, dest_dir: String) -> Result<String, String> {
+    let output = Command::new("git")
+        .arg("clone")
+        .arg("--progress")
+        .arg(&clone_url)
+        .current_dir(&dest_dir)
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if output.status.success() {
+        // Derive the directory name git used: last path segment of the URL, minus ".git"
+        let repo_name = clone_url
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or("repo")
+            .trim_end_matches(".git")
+            // strip any "user:token@host/..." prefix that may be left
+            .rsplit('@')
+            .next()
+            .unwrap_or("repo")
+            .to_string();
+        // Remove embedded credentials from repo_name if present
+        let clean_name = repo_name
+            .split('/')
+            .last()
+            .unwrap_or(&repo_name)
+            .to_string();
+        let full_path = format!("{}/{}", dest_dir.trim_end_matches('/'), clean_name);
+        Ok(full_path)
+    } else {
+        // git prints progress + errors to stderr
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        Err(stderr)
+    }
+}
+
+/// Get the primary remote URL for a repo (origin).
+#[tauri::command]
+pub async fn git_remote_url(path: String) -> Result<String, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(&path)
+        .arg("remote")
+        .arg("get-url")
+        .arg("origin")
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
+}

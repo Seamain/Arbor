@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Modal } from "@heroui/react";
 import { CheckCircle2, FileWarning, Save } from "lucide-react";
 import { parseConflicts } from "../utils/conflictParser";
+import { useT } from "../i18n";
 
 interface ConflictModalProps {
   isOpen: boolean;
@@ -12,6 +13,7 @@ interface ConflictModalProps {
 }
 
 export function ConflictModal({ isOpen, onClose, repoPath, onResolved }: ConflictModalProps) {
+  const t = useT();
   const [conflictedFiles, setConflictedFiles] = useState<string[]>([]);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState("");
@@ -104,13 +106,13 @@ export function ConflictModal({ isOpen, onClose, repoPath, onResolved }: Conflic
         <Modal.Container placement="center">
           <Modal.Dialog className="app-modal max-w-5xl">
             <Modal.Header>
-              <Modal.Heading>Resolve Conflicts</Modal.Heading>
+              <Modal.Heading>{t.resolveConflicts}</Modal.Heading>
             </Modal.Header>
             <Modal.Body className="p-0 overflow-hidden flex flex-row h-[70vh]">
               {/* Left sidebar: file list */}
               <div className="side-panel w-64 flex flex-col h-full shrink-0">
                 <div className="panel-header p-3 font-semibold text-sm flex items-center justify-between">
-                  Conflicted Files ({conflictedFiles.length})
+                  {t.conflictedFiles(conflictedFiles.length)}
                 </div>
                 <div className="flex-1 overflow-y-auto p-2 space-y-1">
                   {conflictedFiles.map(f => (
@@ -126,7 +128,7 @@ export function ConflictModal({ isOpen, onClose, repoPath, onResolved }: Conflic
                   {conflictedFiles.length === 0 && !loading && (
                     <div className="text-sm text-default-500 p-2 flex items-center gap-2 text-success">
                       <CheckCircle2 size={16} />
-                      All conflicts resolved!
+                      {t.allConflictsResolved}
                     </div>
                   )}
                 </div>
@@ -140,19 +142,19 @@ export function ConflictModal({ isOpen, onClose, repoPath, onResolved }: Conflic
                       <span className="text-sm font-medium truncate pr-4">{selectedFile}</span>
                       <div className="flex items-center gap-2 shrink-0">
                         {hasParsedConflicts && (
-                          <button 
+                          <button
                             onClick={() => setIsRawMode(!isRawMode)}
                             className="toolbar-button px-3 py-1.5 text-default-700 text-sm rounded-md"
                           >
-                            {isRawMode ? "Visual Mode" : "Raw Editor"}
+                            {isRawMode ? t.visualMode : t.rawEditor}
                           </button>
                         )}
-                        <button 
+                        <button
                           onClick={handleSaveAndAdd}
                           disabled={loading}
                           className="flex items-center gap-2 px-3 py-1.5 bg-primary text-white text-sm rounded-md hover:bg-primary-600 transition-colors disabled:opacity-50 font-semibold"
                         >
-                          <Save size={14} /> Save & Mark Resolved
+                          <Save size={14} /> {t.saveAndMarkResolved}
                         </button>
                       </div>
                     </div>
@@ -172,11 +174,11 @@ export function ConflictModal({ isOpen, onClose, repoPath, onResolved }: Conflic
                               <div className="bg-primary-50 border-b border-default-200">
                                 <div className="flex items-center justify-between px-3 py-1.5 bg-primary-100/50 flex-wrap gap-2">
                                   <span className="font-semibold text-primary-700 text-xs">{block.currentName}</span>
-                                  <button 
+                                  <button
                                     onClick={() => handleResolveBlock(block.id, block.current)}
                                     className="text-xs px-2 py-1 bg-white rounded text-primary-600 hover:bg-primary-50 shadow-sm transition-colors border border-primary-200"
                                   >
-                                    Accept Current
+                                    {t.acceptCurrent}
                                   </button>
                                 </div>
                                 <div className="p-3 whitespace-pre text-primary-900 overflow-x-auto">
@@ -188,17 +190,17 @@ export function ConflictModal({ isOpen, onClose, repoPath, onResolved }: Conflic
                                 <div className="flex items-center justify-between px-3 py-1.5 bg-success-100/50 border-y border-default-200 flex-wrap gap-2">
                                   <span className="font-semibold text-success-700 text-xs">{block.incomingName}</span>
                                   <div className="flex gap-2">
-                                    <button 
+                                    <button
                                       onClick={() => handleResolveBlock(block.id, block.incoming)}
                                       className="text-xs px-2 py-1 bg-white rounded text-success-600 hover:bg-success-50 shadow-sm transition-colors border border-success-200"
                                     >
-                                      Accept Incoming
+                                      {t.acceptIncoming}
                                     </button>
-                                    <button 
+                                    <button
                                       onClick={() => handleResolveBlock(block.id, block.current + '\n' + block.incoming)}
                                       className="text-xs px-2 py-1 bg-white rounded text-default-600 hover:bg-default-50 shadow-sm transition-colors border border-default-200"
                                     >
-                                      Accept Both
+                                      {t.acceptBoth}
                                     </button>
                                   </div>
                                 </div>
@@ -224,23 +226,23 @@ export function ConflictModal({ isOpen, onClose, repoPath, onResolved }: Conflic
                     <div className="w-16 h-16 rounded-full bg-success/20 flex items-center justify-center text-success">
                       <CheckCircle2 size={32} />
                     </div>
-                    <h3 className="text-xl font-semibold">Conflicts Resolved</h3>
+                    <h3 className="text-xl font-semibold">{t.conflictsResolved}</h3>
                     <p className="text-default-500 text-center max-w-md">
-                      All conflicted files have been resolved and staged. You can now commit the merge.
+                      {t.conflictsResolvedInfo}
                     </p>
                     <div className="w-full max-w-md mt-4 space-y-2">
-                      <label className="text-sm font-medium text-default-700">Merge Commit Message</label>
+                      <label className="text-sm font-medium text-default-700">{t.mergeCommitMessage}</label>
                       <textarea 
                         className="w-full p-3 border border-default-200 rounded-md text-sm focus:outline-none focus:border-primary resize-none h-24"
                         value={commitMessage}
                         onChange={e => setCommitMessage(e.target.value)}
                       />
-                      <button 
+                      <button
                         onClick={handleCommitMerge}
                         disabled={loading || !commitMessage.trim()}
                         className="w-full py-2.5 bg-success text-white font-medium rounded-md hover:bg-success-600 transition-colors disabled:opacity-50 mt-2"
                       >
-                        Commit Merge
+                        {t.commitMerge}
                       </button>
                     </div>
                   </div>
