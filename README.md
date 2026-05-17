@@ -118,7 +118,7 @@ xcode-select --install
 ```bash
 # Debian / Ubuntu
 sudo apt update && sudo apt install -y \
-  libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+  libwebkit2gtk-4.1-dev librsvg2-dev patchelf \
   libssl-dev libgtk-3-dev libayatana-appindicator3-dev
 
 # Fedora
