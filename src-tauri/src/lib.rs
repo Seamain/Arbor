@@ -2,6 +2,7 @@ mod git_ops;
 mod oauth;
 
 use notify_debouncer_mini::{new_debouncer, notify::RecursiveMode, DebounceEventResult};
+#[cfg(target_os = "macos")]
 use tauri_plugin_notification::NotificationExt;
 use std::{collections::HashMap, sync::Mutex, time::Duration};
 use tauri::{
@@ -164,7 +165,7 @@ pub fn run() {
             }
 
             // ── Native menu bar (all platforms) ───────────────────────────
-            let menu = build_menu(&app.handle())?;
+            let menu = build_menu(app.handle())?;
             app.set_menu(menu)?;
 
             // Forward menu-item clicks to the frontend as "menu-action" events

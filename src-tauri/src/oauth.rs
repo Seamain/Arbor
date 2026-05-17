@@ -1,11 +1,11 @@
-/// Local-server OAuth flow for GitHub, GitLab, and Gitee.
-///
-/// Flow:
-///   1. Frontend calls `oauth_start` with provider kind + optional host.
-///   2. Rust picks a random free port, builds the authorization URL, opens it in the browser.
-///   3. A minimal TCP listener waits for the browser redirect to `http://localhost:{port}/callback?code=…`.
-///   4. Rust exchanges the code for an access token via the provider's token endpoint.
-///   5. Returns `OAuthResult` (access_token + username + avatar_url) to the frontend.
+//! Local-server OAuth flow for GitHub, GitLab, and Gitee.
+//!
+//! Flow:
+//!   1. Frontend calls `oauth_start` with provider kind + optional host.
+//!   2. Rust picks a random free port, builds the authorization URL, opens it in the browser.
+//!   3. A minimal TCP listener waits for the browser redirect to `http://localhost:{port}/callback?code=…`.
+//!   4. Rust exchanges the code for an access token via the provider's token endpoint.
+//!   5. Returns `OAuthResult` (access_token + username + avatar_url) to the frontend.
 
 // ── First-party OAuth credentials ────────────────────────────────────────────
 const GITHUB_CLIENT_ID:     &str = "Ov23liiZXSqeiTlZ5JHV";
@@ -161,7 +161,7 @@ fn wait_for_callback(port: u16, timeout_secs: u64) -> Result<String, String> {
 
 /// Parse `code` and `state` from a callback path like `/callback?code=ABC&state=XYZ`.
 fn parse_callback(path: &str) -> (Option<String>, Option<String>) {
-    let query = path.splitn(2, '?').nth(1).unwrap_or("");
+    let query = path.split_once('?').map(|x| x.1).unwrap_or("");
     let mut code = None;
     let mut state = None;
     for pair in query.split('&') {

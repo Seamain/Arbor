@@ -771,7 +771,7 @@ pub async fn git_clone(clone_url: String, dest_dir: String) -> Result<String, St
         // Remove embedded credentials from repo_name if present
         let clean_name = repo_name
             .split('/')
-            .last()
+            .next_back()
             .unwrap_or(&repo_name)
             .to_string();
         let full_path = format!("{}/{}", dest_dir.trim_end_matches('/'), clean_name);
