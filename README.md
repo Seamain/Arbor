@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="public/icon.png" alt="Arbor" width="96" height="96" />
+  <img src="src-tauri/icons/icon.png" alt="Arbor" width="96" height="96" />
 
   <h1>Arbor</h1>
 
@@ -54,7 +54,7 @@ Go to the [**Releases**](../../releases) page and download the package for your 
 | Platform | Format | Architecture |
 |----------|--------|-------------|
 | macOS | `.dmg` | `x86_64` (Intel) · `aarch64` (Apple Silicon) |
-| Linux | `.deb` · `.rpm` · `.AppImage` | `x86_64` · `arm64` |
+| Linux(v0.2.0) | `.deb` · `.rpm` · `.AppImage` | `x86_64` · `arm64` |
 | Windows | `.msi` | `x86_64` · `arm64` |
 
 ### macOS
