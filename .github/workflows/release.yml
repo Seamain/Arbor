@@ -20,20 +20,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS
-          - platform: macos-x86_64
-            os: macos-13
-            target: x86_64-apple-darwin
-            args: '--target x86_64-apple-darwin --bundles dmg'
-            artifact_name: macos-x86_64-dmg
-            artifact_path: src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
-
-          - platform: macos-aarch64
-            os: macos-14
-            target: aarch64-apple-darwin
-            args: '--target aarch64-apple-darwin --bundles dmg'
-            artifact_name: macos-aarch64-dmg
-            artifact_path: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          # macOS Universal
+          - platform: macos-universal
+            os: macos-latest
+            target: aarch64-apple-darwin,x86_64-apple-darwin
+            args: '--target universal-apple-darwin --bundles dmg'
+            artifact_name: macos-universal-dmg
+            artifact_path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
 
           # Linux
           - platform: linux-x86_64
@@ -45,17 +38,6 @@ jobs:
               src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
               src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/rpm/*.rpm
               src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
-
-          - platform: linux-aarch64
-            # 使用 GitHub 原生 ARM64 runner 进行 Linux 编译（需仓库为 Public 或配置了 ARM64 Runner）
-            os: ubuntu-24.04-arm64
-            target: aarch64-unknown-linux-gnu
-            args: '--target aarch64-unknown-linux-gnu --bundles deb,rpm,appimage'
-            artifact_name: linux-aarch64-bundles
-            artifact_path: |
-              src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/deb/*.deb
-              src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/rpm/*.rpm
-              src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
 
           # Windows
           - platform: windows-x86_64
