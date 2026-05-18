@@ -459,10 +459,10 @@ export default function App() {
     addLog(path, "command", "Running Status...");
     try {
       const [status, modifiedFiles, branches, historyLogs, headRaw] = await Promise.all([
-        invoke<string>("git_status", { path }),
-        invoke<string[]>("git_modified_files", { path }),
-        invoke<string[]>("git_get_branches", { path }),
-        invoke<string[]>("git_log_graph", { path }),
+        invoke<string>("git_status", { path }).catch(() => ""),
+        invoke<string[]>("git_modified_files", { path }).catch(() => [] as string[]),
+        invoke<string[]>("git_get_branches", { path }).catch(() => [] as string[]),
+        invoke<string[]>("git_log_graph", { path }).catch(() => [] as string[]),
         invoke<string>("git_head_oid", { path }).catch(() => ""),
       ]);
       // Block silentRefresh for 2s after fullRefresh completes, so any

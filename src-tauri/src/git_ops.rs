@@ -192,12 +192,21 @@ pub async fn git_status(path: String) -> Result<String, String> {
                 if let Some(upstream_name) = upstream_buf.as_str() {
                     out.push_str(&format!("# branch.upstream {}\n", upstream_name));
 
-                    // Ahead/behind
-                    if let (Ok(local_oid), Ok(upstream_ref)) = (
-                        head_ref.peel_to_commit().map(|c| c.id()),
-                        repo.find_reference(upstream_name).and_then(|r| r.peel_to_commit().map(|c| c.id())),
-                    ) {
-                        if let Ok((ahead, behind)) = repo.graph_ahead_behind(local_oid, upstream_ref) {
+                    // Ahead/behind — both OIDs must resolve in local ODB.
+                    // On shallow clones or after a partial fetch the upstream
+                    // OID may be absent; silently skip rather than error.
+                    let local_oid = head_ref.peel_to_commit().ok().map(|c| c.id());
+                    let upstream_oid = repo
+                        .find_reference(upstream_name)
+                        .ok()
+                        .and_then(|r| r.peel_to_commit().ok())
+                        .and_then(|c| {
+                            // Verify the object actually exists in the ODB
+                            // before passing it to graph_ahead_behind.
+                            repo.find_object(c.id(), None).ok().map(|_| c.id())
+                        });
+                    if let (Some(l), Some(u)) = (local_oid, upstream_oid) {
+                        if let Ok((ahead, behind)) = repo.graph_ahead_behind(l, u) {
                             out.push_str(&format!("# branch.ab +{} -{}\n", ahead, behind));
                         }
                     }
@@ -729,9 +738,15 @@ pub async fn git_head_oid(path: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn git_log_graph(path: String) -> Result<Vec<String>, String> {
     let repo = open(&path)?;
-    let mut walk = repo.revwalk().map_err(|e| e.to_string())?;
-    walk.set_sorting(git2::Sort::TIME | git2::Sort::TOPOLOGICAL)
-        .map_err(|e| e.to_string())?;
+    // If the repo has no commits yet (empty repo) or object DB is damaged,
+    // return an empty list rather than an error so the UI still loads.
+    let mut walk = match repo.revwalk() {
+        Ok(w) => w,
+        Err(_) => return Ok(vec![]),
+    };
+    if walk.set_sorting(git2::Sort::TIME | git2::Sort::TOPOLOGICAL).is_err() {
+        return Ok(vec![]);
+    }
 
     // Push all branch/tag refs but skip refs/stash — stash commits have
     // synthetic parents that are not in the ODB and cause "object not found".
