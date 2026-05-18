@@ -117,21 +117,38 @@ fn origin_url(repo: &Repository) -> Option<String> {
 }
 
 /// Run a system `git` command in `repo_path` with the given args.
-/// On Windows, CREATE_NO_WINDOW is set so no console flashes.
+///
+/// On Windows the process is created with CREATE_NO_WINDOW (0x08000000) so
+/// no console window ever appears — even for SSH operations that prompt for
+/// passphrases (libssh2 / OpenSSH handle that through the SSH agent instead).
 fn run_git_command(repo_path: &str, args: &[&str]) -> Result<String, String> {
-    let mut cmd = std::process::Command::new("git");
-    cmd.current_dir(repo_path).args(args);
+    git_command_output(repo_path, args)
+}
 
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
-
-    let output = cmd
+#[cfg(target_os = "windows")]
+fn git_command_output(repo_path: &str, args: &[&str]) -> Result<String, String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let output = std::process::Command::new("git")
+        .current_dir(repo_path)
+        .args(args)
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|e| format!("failed to run git: {e}"))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
 
+#[cfg(not(target_os = "windows"))]
+fn git_command_output(repo_path: &str, args: &[&str]) -> Result<String, String> {
+    let output = std::process::Command::new("git")
+        .current_dir(repo_path)
+        .args(args)
+        .output()
+        .map_err(|e| format!("failed to run git: {e}"))?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {
@@ -715,7 +732,22 @@ pub async fn git_log_graph(path: String) -> Result<Vec<String>, String> {
     let mut walk = repo.revwalk().map_err(|e| e.to_string())?;
     walk.set_sorting(git2::Sort::TIME | git2::Sort::TOPOLOGICAL)
         .map_err(|e| e.to_string())?;
-    walk.push_glob("refs/*").map_err(|e| e.to_string())?;
+
+    // Push all branch/tag refs but skip refs/stash — stash commits have
+    // synthetic parents that are not in the ODB and cause "object not found".
+    let all_refs = repo.references().map_err(|e| e.to_string())?;
+    for reference in all_refs.flatten() {
+        let name = match reference.name() {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        if name == "refs/stash" || name.starts_with("refs/stash/") {
+            continue;
+        }
+        if let Ok(oid) = reference.peel_to_commit().map(|c| c.id()) {
+            let _ = walk.push(oid); // ignore errors for packed refs etc.
+        }
+    }
 
     // Build a map: oid → ref names (branches/tags)
     let refs = repo.references().map_err(|e| e.to_string())?;
@@ -723,12 +755,17 @@ pub async fn git_log_graph(path: String) -> Result<Vec<String>, String> {
         std::collections::HashMap::new();
     let head_branch = repo.head().ok().and_then(|h| h.shorthand().map(|s| s.to_string()));
 
-    for reference in refs {
-        if let Ok(r) = reference {
-            if let (Some(name), Ok(target)) = (r.name(), r.peel_to_commit()) {
-                let display = prettify_ref(name, head_branch.as_deref());
-                ref_map.entry(target.id().to_string()).or_default().push(display);
-            }
+    for reference in refs.flatten() {
+        let name = match reference.name() {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        if name == "refs/stash" || name.starts_with("refs/stash/") {
+            continue;
+        }
+        if let Ok(target) = reference.peel_to_commit() {
+            let display = prettify_ref(&name, head_branch.as_deref());
+            ref_map.entry(target.id().to_string()).or_default().push(display);
         }
     }
 
@@ -738,12 +775,20 @@ pub async fn git_log_graph(path: String) -> Result<Vec<String>, String> {
         .as_secs() as i64;
 
     let mut lines = Vec::new();
-    for (i, oid) in walk.enumerate() {
+    for (i, oid_result) in walk.enumerate() {
         if i >= 200 {
             break;
         }
-        let oid = oid.map_err(|e| e.to_string())?;
-        let commit = repo.find_commit(oid).map_err(|e| e.to_string())?;
+        // Skip any OID that fails to resolve — avoids crashing on shallow
+        // clones or repos with loose objects referencing missing packfile data.
+        let oid = match oid_result {
+            Ok(o) => o,
+            Err(_) => continue,
+        };
+        let commit = match repo.find_commit(oid) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
 
         let hash = oid.to_string();
         let parents: Vec<String> = commit.parent_ids().map(|p| p.to_string()).collect();
