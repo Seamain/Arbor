@@ -104,6 +104,45 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Rename artifacts (strip version number)
+        shell: python3 {0}
+        run: |
+          import re, pathlib
+
+          def strip_version(name):
+              # Tauri naming conventions per platform:
+              #   .msi / .exe / .deb / .AppImage / .dmg  use underscores:
+              #     Arbor_1.0.0_x64.msi  ->  Arbor_x64.msi
+              #     Arbor_1.2.3-beta.1_x64-setup.exe  ->  Arbor_x64-setup.exe
+              #   .rpm uses dashes:
+              #     arbor-1.0.0-1.x86_64.rpm  ->  arbor.x86_64.rpm
+              patterns = {
+                  '.msi':      r'^(.+?)_\d+\.\d+\.\d+[^_]*(_.*)?\.msi$',
+                  '.exe':      r'^(.+?)_\d+\.\d+\.\d+[^_]*(_.*)?\.exe$',
+                  '.deb':      r'^(.+?)_\d+\.\d+\.\d+[^_]*(_.*)?\.deb$',
+                  '.AppImage': r'^(.+?)_\d+\.\d+\.\d+[^_]*(_.*)?\.AppImage$',
+                  '.dmg':      r'^(.+?)_\d+\.\d+\.\d+[^_]*(_.*)?\.dmg$',
+                  '.rpm':      r'^(.+?)-\d+\.\d+\.\d+[^-]*(?:-\d+)?\.(.+)\.rpm$',
+              }
+              for ext, pat in patterns.items():
+                  if name.endswith(ext):
+                      m = re.match(pat, name, re.IGNORECASE)
+                      if m:
+                          if ext == '.rpm':
+                              return f"{m.group(1)}.{m.group(2)}.rpm"
+                          suffix = m.group(2) or ''
+                          return f"{m.group(1)}{suffix}{ext}"
+              return name
+
+          root = pathlib.Path('src-tauri/target')
+          for f in root.rglob('*'):
+              if not f.is_file():
+                  continue
+              new_name = strip_version(f.name)
+              if new_name != f.name:
+                  f.rename(f.parent / new_name)
+                  print(f'Renamed: {f.name}  ->  {new_name}')
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:

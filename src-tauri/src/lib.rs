@@ -156,14 +156,22 @@ pub fn run() {
                 let _ = apply_acrylic(&window, Some((245, 248, 252, 200)));
             }
 
-            // ── Linux: no native blur support; set a solid background ─────
+            // ── Linux: no native blur — disable transparency, force solid BG ──
             #[cfg(target_os = "linux")]
             {
-                // Transparent windows on Linux are compositor-dependent.
-                // Emit a platform hint so the frontend can switch to its
-                // solid-background CSS class instead of relying on blur.
+                // Most Linux compositors don't support backdrop-filter or
+                // transparent Tauri windows. Disable the window's transparency
+                // so the OS draws a proper opaque frame, then tell the frontend
+                // to switch from its glass CSS to solid fallback colours.
+                let _ = window.set_transparent(false);
+
+                // set_transparent may not fire before first paint, so we also
+                // inject the attribute as early as possible via a script that
+                // runs synchronously in the document head.
                 let _ = window.eval(
-                    "document.documentElement.setAttribute('data-platform','linux')"
+                    "document.documentElement.setAttribute('data-platform','linux'); \
+                     document.documentElement.style.background='#f1f4f8'; \
+                     document.body && (document.body.style.background='#f1f4f8');"
                 );
             }
 

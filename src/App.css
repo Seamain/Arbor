@@ -668,7 +668,23 @@ textarea:focus-visible {
   background: rgba(21, 32, 43, 0.1);
 }
 
-/* ── Linux fallback: no compositor blur, use solid surface ───────────────── */
+/* ── Linux fallback: no compositor blur, use solid surfaces everywhere ───── */
+/* Linux compositors rarely support backdrop-filter; transparent windows show
+   through to the desktop. Force opaque backgrounds on every surface that uses
+   rgba() or backdrop-filter so nothing appears "missing" or see-through.     */
+
+/* Root background — must be opaque so the window isn't transparent */
+[data-platform="linux"] html,
+[data-platform="linux"] body,
+[data-platform="linux"] #root {
+  background-color: #f1f4f8 !important;
+  background: #f1f4f8 !important;
+}
+[data-platform="linux"] #root::before {
+  display: none !important;
+}
+
+/* Glass surfaces */
 [data-platform="linux"] .liquid-glass-base {
   background: #f1f4f8 !important;
 }
@@ -692,11 +708,63 @@ textarea:focus-visible {
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
 }
+
+/* Toolbar and side panels */
+[data-platform="linux"] .repo-toolbar {
+  background: #ffffff !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+[data-platform="linux"] .side-panel {
+  background: #edf0f5 !important;
+}
+[data-platform="linux"] .panel-header {
+  background: #e8ecf2 !important;
+}
+
+/* Buttons and chips */
+[data-platform="linux"] .toolbar-button {
+  background: #ffffff !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.10) !important;
+}
+[data-platform="linux"] .status-chip {
+  background: #ffffff !important;
+}
+
+/* Context menu */
 [data-platform="linux"] .ctx-menu {
   background: #f5f7fa !important;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
 }
+
+/* Welcome screen */
+[data-platform="linux"] .welcome-surface {
+  background: #ffffff !important;
+}
+[data-platform="linux"] .welcome-repo {
+  background: #f5f7fa !important;
+}
+
+/* Dark theme on Linux */
+[data-platform="linux"][data-theme="dark"] html,
+[data-platform="linux"][data-theme="dark"] body,
+[data-platform="linux"][data-theme="dark"] #root {
+  background-color: #12161c !important;
+  background: #12161c !important;
+}
+[data-platform="linux"][data-theme="dark"] .liquid-glass-base    { background: #12161c !important; }
+[data-platform="linux"][data-theme="dark"] .liquid-glass-sidebar { background: #181e28 !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+[data-platform="linux"][data-theme="dark"] .liquid-glass-panel   { background: #1a2030 !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+[data-platform="linux"][data-theme="dark"] .liquid-glass-header  { background: #141820 !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+[data-platform="linux"][data-theme="dark"] .liquid-glass-console { background: #10141e !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+[data-platform="linux"][data-theme="dark"] .repo-toolbar         { background: #141820 !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+[data-platform="linux"][data-theme="dark"] .side-panel           { background: #181e28 !important; }
+[data-platform="linux"][data-theme="dark"] .panel-header         { background: #141820 !important; }
+[data-platform="linux"][data-theme="dark"] .toolbar-button       { background: #1e2838 !important; }
+[data-platform="linux"][data-theme="dark"] .ctx-menu             { background: #181e2a !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+[data-platform="linux"][data-theme="dark"] .welcome-surface      { background: #1c2330 !important; }
+[data-platform="linux"][data-theme="dark"] .welcome-repo         { background: #1e2838 !important; }
 
 /* ── Settings Modal ───────────────────────────────────────────────────────── */
 .settings-modal {

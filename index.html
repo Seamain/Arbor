@@ -4,7 +4,20 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri + React + Typescript</title>
+    <title>Arbor</title>
+    <!-- Detect Linux synchronously before first paint so CSS fallbacks apply
+         immediately and no transparent flash occurs. The Rust setup() code
+         also calls window.eval() with the same attribute, but this script
+         runs earlier (before the Tauri IPC bridge is ready). -->
+    <script>
+      (function () {
+        var ua = navigator.userAgent || "";
+        // Tauri on Linux sets the platform in the user agent as "Linux"
+        if (ua.indexOf("Linux") !== -1 && ua.indexOf("Android") === -1) {
+          document.documentElement.setAttribute("data-platform", "linux");
+        }
+      })();
+    </script>
   </head>
 
   <body>
