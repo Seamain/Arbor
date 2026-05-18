@@ -43,16 +43,20 @@ jobs:
           - platform: windows-x86_64
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            args: '--target x86_64-pc-windows-msvc --bundles msi'
-            artifact_name: windows-x86_64-msi
-            artifact_path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+            args: '--target x86_64-pc-windows-msvc --bundles msi,nsis'
+            artifact_name: windows-x86_64
+            artifact_path: |
+              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
 
           - platform: windows-aarch64
             os: windows-latest
             target: aarch64-pc-windows-msvc
-            args: '--target aarch64-pc-windows-msvc --bundles msi'
-            artifact_name: windows-aarch64-msi
-            artifact_path: src-tauri/target/aarch64-pc-windows-msvc/release/bundle/msi/*.msi
+            args: '--target aarch64-pc-windows-msvc --bundles msi,nsis'
+            artifact_name: windows-aarch64
+            artifact_path: |
+              src-tauri/target/aarch64-pc-windows-msvc/release/bundle/msi/*.msi
+              src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.exe
 
     steps:
       - name: Checkout
@@ -80,14 +84,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
             librsvg2-dev \
             patchelf \
             libssl-dev \
             libgtk-3-dev \
             libayatana-appindicator3-dev \
             libglib2.0-dev \
-            libsoup-3.0-dev \
-            libjavascriptcoregtk-4.1-dev
+            rpm \
+            squashfs-tools \
+            file
 
       - name: Install JS dependencies
         run: npm ci
@@ -149,6 +156,12 @@ jobs:
           body: ${{ steps.notes.outputs.RELEASE_NOTES }}
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
-          files: dist-packages/*
+          files: |
+            dist-packages/**/*.dmg
+            dist-packages/**/*.deb
+            dist-packages/**/*.rpm
+            dist-packages/**/*.AppImage
+            dist-packages/**/*.msi
+            dist-packages/**/*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

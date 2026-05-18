@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  create-folder.wxs
+  Ensures the installation directory (and any parent directories the user
+  may have typed) is created during install and removed when empty on
+  uninstall.  Without this, WiX MSI only creates dirs that contain files;
+  if the user types a brand-new path like C:\MyApps\Arbor the install can
+  fail with "directory does not exist".
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="CreateInstallDir" Guid="*">
+        <!--
+          CreateFolder tells the MSI engine to explicitly create INSTALLDIR
+          (and all intermediate directories) before copying any files.
+          The RemoveFolder entry cleans up on uninstall if the folder is empty.
+        -->
+        <CreateFolder />
+        <RemoveFolder Id="RemoveInstallDir" On="uninstall" />
+        <RegistryValue
+          Root="HKCU"
+          Key="Software\Arbor"
+          Name="InstallDir"
+          Type="string"
+          Value="[INSTALLDIR]"
+          KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="CreateDirFeature" Absent="disallow">
+      <ComponentRef Id="CreateInstallDir" />
+    </Feature>
+  </Fragment>
+</Wix>

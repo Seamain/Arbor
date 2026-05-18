@@ -31,11 +31,22 @@ fn watch_repo(app: AppHandle, path: String) -> Result<(), String> {
 
     let app_handle = app.clone();
     let path_clone = path.clone();
+    let git_dir = std::path::Path::new(&path).join(".git");
     let mut debouncer = new_debouncer(
         Duration::from_millis(500),
         move |result: DebounceEventResult| {
-            if result.is_ok() {
-                let _ = app_handle.emit("repo-changed", path_clone.clone());
+            if let Ok(events) = result {
+                // Ignore any event whose path is inside the .git/ directory.
+                // Git routinely writes to .git/ (FETCH_HEAD, index, packed-refs, …)
+                // during normal operations, so watching those paths on Windows
+                // causes an infinite loop: git write → repo-changed → silentRefresh
+                // → more git writes → repo-changed → …
+                let has_worktree_change = events.iter().any(|e| {
+                    !e.path.starts_with(&git_dir)
+                });
+                if has_worktree_change {
+                    let _ = app_handle.emit("repo-changed", path_clone.clone());
+                }
             }
         },
     )

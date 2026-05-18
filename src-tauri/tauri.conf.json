@@ -38,6 +38,20 @@
     ],
     "macOS": {
       "infoPlist": "Info.plist"
+    },
+    "windows": {
+      "wix": {
+        "fragmentPaths": ["wix/create-folder.wxs"],
+        "componentRefs": ["CreateInstallDir"],
+        "featureGroupRefs": [],
+        "featureRefs": ["CreateDirFeature"],
+        "mergeRefs": []
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["English", "SimpChinese"],
+        "displayLanguageSelector": true
+      }
     }
   }
 }
