@@ -930,12 +930,14 @@ pub async fn git_commit(path: String, message: String) -> Result<String, String>
     let tree_oid = index.write_tree().map_err(|e| e.to_string())?;
     let tree = repo.find_tree(tree_oid).map_err(|e| e.to_string())?;
 
-    let parents: Vec<git2::Commit> = repo
-        .head()
-        .ok()
-        .and_then(|h| h.peel_to_commit().ok())
-        .into_iter()
-        .collect();
+    // Collect parent commits.  For the very first commit in a fresh repo HEAD
+    // is "unborn" — repo.head() returns ErrorCode::UnbornBranch, which is
+    // expected; any other error is a real problem we should surface.
+    let parents: Vec<git2::Commit> = match repo.head() {
+        Ok(h) => h.peel_to_commit().ok().into_iter().collect(),
+        Err(e) if e.code() == git2::ErrorCode::UnbornBranch => vec![],
+        Err(e) => return Err(e.to_string()),
+    };
     let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
 
     let oid = repo

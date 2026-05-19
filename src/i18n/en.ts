@@ -143,6 +143,20 @@ export const en = {
   settingsResetDefaults: "Reset to defaults",
   settingsResetConfirm: "Reset all settings to defaults?",
 
+  // ── Settings → Updates ─────────────────────────────────────────────────────
+  settingsUpdates: "Updates",
+  settingsCurrentVersion: "Current Version",
+  settingsAutoCheckUpdates: "Check for Updates Automatically",
+  settingsAutoCheckUpdatesHint: "Check on every launch and notify when a new version is available",
+  settingsCheckNow: "Check Now",
+  settingsChecking: "Checking…",
+  settingsUpToDate: "Arbor is up to date",
+  settingsUpdateAvailable: (v: string) => `Version ${v} is available`,
+  settingsUpdateNotes: "What's new",
+  settingsInstallUpdate: "Download & Install",
+  settingsInstalling: "Installing…",
+  settingsUpdateError: "Update check failed",
+
   // ── Conflict Modal ─────────────────────────────────────────────────────────
   resolveConflicts: "Resolve Conflicts",
   conflictedFiles: (n: number) => `Conflicted Files (${n})`,
@@ -172,6 +186,65 @@ export const en = {
   timeMinutesAgo: (n: number) => `${n}m ago`,
   timeHoursAgo: (n: number) => `${n}h ago`,
   timeDaysAgo: (n: number) => `${n}d ago`,
+
+  // ── App context menus & logs ───────────────────────────────────────────────
+  ctxViewDiff: "View Diff",
+  ctxOpenIn: (editor: string) => `Open in ${editor}`,
+  ctxDiscardChanges: "Discard Changes",
+  ctxCopyBranchName: "Copy branch name",
+  ctxCheckout: "Checkout",
+  ctxMergeFF: "Merge (Fast-Forward) into current",
+  ctxMergeNoFF: "Merge (No-FF) into current",
+  ctxRebaseOnto: (branch: string) => `Rebase current onto ${branch}`,
+  ctxDeleteBranch: "Delete Branch",
+  ctxRefresh: "Refresh",
+  ctxFetch: "Fetch",
+  ctxCloseTab: "Close Tab",
+  ctxRefreshHistory: "Refresh History",
+  ctxFetchAll: "Fetch All",
+  logRunningStatus: "Running Status...",
+  logRepoLoaded: "Repository loaded successfully.",
+  logError: (err: string) => `Error: ${err}`,
+  logRunningCommand: (cmd: string) => `Running ${cmd}...`,
+  logSuccessCommand: (cmd: string) => `Success: ${cmd}`,
+  notifyPushTitle: "Push successful",
+  notifyPushSuccess: (repo: string) => `${repo} pushed to remote`,
+  notifyPullTitle: "Pull successful",
+  notifyPullSuccess: (repo: string) => `${repo} pulled from remote`,
+  logCreatePr: (url: string) => `Create PR → ${url}`,
+  confirmDiscardFile: (file: string) => `Discard all changes in ${file}?`,
+  logDiscardingFile: (file: string) => `Discarding ${file}...`,
+  logDiscardedFile: (file: string) => `Discarded changes in ${file}.`,
+  logDiscardFileFailed: (file: string, err: string) => `Failed to discard ${file}: ${err}`,
+  confirmDiscardAll: "Discard all local changes and untracked files?",
+  logDiscardingAll: "Discarding all changes...",
+  logDiscardedAll: "Discarded all local changes.",
+  logDiscardAllFailed: (err: string) => `Failed to discard all changes: ${err}`,
+  noReposOpen: "No repositories open",
+  recentRepos: "Recent",
+  removeFromHistory: "Remove from history",
+  aboutArbor: "About Arbor",
+  commitsBehind: (count: number) => `Your branch is ${count} commit${count > 1 ? "s" : ""} behind the remote.`,
+  tabDiff: "Diff",
+  tabConsole: "Console",
+  diffNoChanges: "No differences found",
+  diffNoChangesHint: "The file matches the last commit",
+  branchesLocal: "Local",
+  branchesRemote: "Remote",
+  logAutoStashSaved: "Auto stash saved; it will be released after recovery.",
+  logAutoStashReleased: "Auto stash released.",
+  logAutoStashReleaseFailed: (err: string) => `Failed to release auto stash: ${err}`,
+  logAutoStashApplied: "Auto stash applied and released.",
+  logFetchingRemoteInfo: (branch: string) => `Fetching remote info for ${branch}...`,
+
+  // ── About Modal ────────────────────────────────────────────────────────────
+  aboutTagline: "A native Git client built for clarity",
+  aboutGitHub: "GitHub",
+  aboutReportIssue: "Report an Issue",
+  aboutBuiltWith: "Built with",
+
+  // ── Settings Extra ─────────────────────────────────────────────────────────
+  settingsUpdateNetworkError: "Could not reach the update server. Check your internet connection and try again.",
 };
 
 export type Translations = {
@@ -319,6 +392,20 @@ export type Translations = {
   settingsResetDefaults: string;
   settingsResetConfirm: string;
 
+  // Settings → Updates
+  settingsUpdates: string;
+  settingsCurrentVersion: string;
+  settingsAutoCheckUpdates: string;
+  settingsAutoCheckUpdatesHint: string;
+  settingsCheckNow: string;
+  settingsChecking: string;
+  settingsUpToDate: string;
+  settingsUpdateAvailable: (v: string) => string;
+  settingsUpdateNotes: string;
+  settingsInstallUpdate: string;
+  settingsInstalling: string;
+  settingsUpdateError: string;
+
   // Conflict Modal
   resolveConflicts: string;
   conflictedFiles: (n: number) => string;
@@ -348,4 +435,63 @@ export type Translations = {
   timeMinutesAgo: (n: number) => string;
   timeHoursAgo: (n: number) => string;
   timeDaysAgo: (n: number) => string;
+
+  // App context menus & logs
+  ctxViewDiff: string;
+  ctxOpenIn: (editor: string) => string;
+  ctxDiscardChanges: string;
+  ctxCopyBranchName: string;
+  ctxCheckout: string;
+  ctxMergeFF: string;
+  ctxMergeNoFF: string;
+  ctxRebaseOnto: (branch: string) => string;
+  ctxDeleteBranch: string;
+  ctxRefresh: string;
+  ctxFetch: string;
+  ctxCloseTab: string;
+  ctxRefreshHistory: string;
+  ctxFetchAll: string;
+  logRunningStatus: string;
+  logRepoLoaded: string;
+  logError: (err: string) => string;
+  logRunningCommand: (cmd: string) => string;
+  logSuccessCommand: (cmd: string) => string;
+  notifyPushTitle: string;
+  notifyPushSuccess: (repo: string) => string;
+  notifyPullTitle: string;
+  notifyPullSuccess: (repo: string) => string;
+  logCreatePr: (url: string) => string;
+  confirmDiscardFile: (file: string) => string;
+  logDiscardingFile: (file: string) => string;
+  logDiscardedFile: (file: string) => string;
+  logDiscardFileFailed: (file: string, err: string) => string;
+  confirmDiscardAll: string;
+  logDiscardingAll: string;
+  logDiscardedAll: string;
+  logDiscardAllFailed: (err: string) => string;
+  noReposOpen: string;
+  recentRepos: string;
+  removeFromHistory: string;
+  aboutArbor: string;
+  commitsBehind: (count: number) => string;
+  tabDiff: string;
+  tabConsole: string;
+  diffNoChanges: string;
+  diffNoChangesHint: string;
+  branchesLocal: string;
+  branchesRemote: string;
+  logAutoStashSaved: string;
+  logAutoStashReleased: string;
+  logAutoStashReleaseFailed: (err: string) => string;
+  logAutoStashApplied: string;
+  logFetchingRemoteInfo: (branch: string) => string;
+
+  // About Modal
+  aboutTagline: string;
+  aboutGitHub: string;
+  aboutReportIssue: string;
+  aboutBuiltWith: string;
+
+  // Settings Extra
+  settingsUpdateNetworkError: string;
 };

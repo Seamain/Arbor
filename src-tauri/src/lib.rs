@@ -10,6 +10,49 @@ use tauri::{
     AppHandle, Emitter, Manager,
 };
 
+// ── Update commands ───────────────────────────────────────────────────────────
+
+/// Returned to the frontend so it can render the update banner.
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInfo {
+    pub version: String,
+    pub body: Option<String>,
+}
+
+/// Check GitHub Releases for a newer version.
+/// Returns `Some(UpdateInfo)` when an update is available, `None` when already
+/// up to date, or an `Err` when the network check fails.
+#[tauri::command]
+async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    match updater.check().await {
+        Ok(Some(update)) => Ok(Some(UpdateInfo {
+            version: update.version.clone(),
+            body: update.body.clone(),
+        })),
+        Ok(None) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Download and install the pending update, then restart the app.
+/// Call this only after `check_for_updates` returned `Some`.
+#[tauri::command]
+async fn install_update(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    if let Some(update) = updater.check().await.map_err(|e| e.to_string())? {
+        update
+            .download_and_install(|_chunk, _total| {}, || {})
+            .await
+            .map_err(|e| e.to_string())?;
+        app.restart();
+    }
+    Ok(())
+}
+
 // Map from repo path → its debouncer (keeping it alive)
 struct WatcherState(
     Mutex<
@@ -125,9 +168,19 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     ])?;
 
     // ── Help ──────────────────────────────────────────────────────────────
-    let help_about    = PredefinedMenuItem::about(app, Some("About Git Client"), None)?;
-    let help_settings = MenuItem::with_id(app, "app_settings", "Preferences…", true, Some("CmdOrCtrl+,"))?;
-    let help_menu     = Submenu::with_items(app, "Help", true, &[&help_settings, &PredefinedMenuItem::separator(app)?, &help_about])?;
+    // NOTE: We use a regular MenuItem for "About" (not PredefinedMenuItem::about)
+    // so it emits a "menu-action" event the frontend can intercept. On macOS,
+    // PredefinedMenuItem::about is captured by the system and never fired.
+    let help_about     = MenuItem::with_id(app, "app_about",        "About Arbor",        true, None::<&str>)?;
+    let help_settings  = MenuItem::with_id(app, "app_settings",     "Preferences…",       true, Some("CmdOrCtrl+,"))?;
+    let help_check_upd = MenuItem::with_id(app, "check_for_update", "Check for Updates…", true, None::<&str>)?;
+    let help_menu = Submenu::with_items(app, "Help", true, &[
+        &help_settings,
+        &PredefinedMenuItem::separator(app)?,
+        &help_check_upd,
+        &PredefinedMenuItem::separator(app)?,
+        &help_about,
+    ])?;
 
     // On macOS the system inserts an implicit "Apple" menu before everything.
     // On Windows/Linux the order below is exactly what appears in the menu bar.
@@ -194,12 +247,15 @@ pub fn run() {
             Ok(())
         })
         .manage(WatcherState(Mutex::new(HashMap::new())))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             watch_repo,
             unwatch_repo,
+            check_for_updates,
+            install_update,
             git_ops::git_check_repo,
             git_ops::git_status,
             git_ops::git_fetch,

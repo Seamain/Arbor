@@ -26,6 +26,9 @@ export interface AppSettings {
   fileWatcherDebounceMs: number;  // 200–5000
   notifyOnPush: boolean;
   notifyOnPull: boolean;
+
+  // Updates
+  autoCheckUpdates: boolean;  // check on app launch
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -45,6 +48,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   fileWatcherDebounceMs: 500,
   notifyOnPush: false,
   notifyOnPull: false,
+
+  autoCheckUpdates: true,
 };
 
 const SETTINGS_KEY = "arbor-settings";

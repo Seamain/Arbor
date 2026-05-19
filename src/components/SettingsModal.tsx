@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { Modal } from "@heroui/react";
-import { Palette, GitBranch, Code2, Bell, RotateCcw, X } from "lucide-react";
+import { Palette, GitBranch, Code2, Bell, RefreshCw, RotateCcw, X, Download, CheckCircle, AlertCircle, Sparkles } from "lucide-react";
 import {
   AppSettings, DEFAULT_SETTINGS, Theme, PullStrategy, GlassIntensity, Language,
 } from "../settings";
@@ -14,7 +16,7 @@ interface Props {
   onSave: (s: AppSettings) => void;
 }
 
-type Section = "appearance" | "git" | "editor" | "notifications";
+type Section = "appearance" | "git" | "editor" | "notifications" | "updates";
 
 // ── small primitives ──────────────────────────────────────────────────────────
 function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -214,6 +216,139 @@ function NotificationsSection({ s, set }: { s: AppSettings; set: (p: Partial<App
   );
 }
 
+// ── Updates section ───────────────────────────────────────────────────────────
+type UpdateStatus =
+  | { kind: "idle" }
+  | { kind: "checking" }
+  | { kind: "upToDate" }
+  | { kind: "available"; version: string; body: string | null }
+  | { kind: "installing" }
+  | { kind: "error"; message: string };
+
+function UpdatesSection({ s, set }: { s: AppSettings; set: (p: Partial<AppSettings>) => void }) {
+  const t = useT();
+  const [status, setStatus] = useState<UpdateStatus>({ kind: "idle" });
+  const [appVersion, setAppVersion] = useState<string>("");
+
+  // Load current version once on mount
+  useEffect(() => {
+    getVersion().then(v => setAppVersion(v)).catch(() => setAppVersion("—"));
+  }, []);
+
+  async function handleCheck() {
+    setStatus({ kind: "checking" });
+    try {
+      const info = await invoke<{ version: string; body: string | null } | null>("check_for_updates");
+      if (info) {
+        setStatus({ kind: "available", version: info.version, body: info.body });
+      } else {
+        setStatus({ kind: "upToDate" });
+      }
+    } catch (e) {
+      setStatus({ kind: "error", message: String(e) });
+    }
+  }
+
+  async function handleInstall() {
+    setStatus({ kind: "installing" });
+    try {
+      await invoke("install_update");
+      // install_update calls app.restart(), so this line won't be reached on success
+    } catch (e) {
+      setStatus({ kind: "error", message: String(e) });
+    }
+  }
+
+  return (
+    <div className="settings-section-body">
+      {/* Current version row */}
+      <Row label={t.settingsCurrentVersion}>
+        <span className="settings-version-badge">{appVersion || "—"}</span>
+      </Row>
+
+      {/* Auto-check toggle */}
+      <Row label={t.settingsAutoCheckUpdates} hint={t.settingsAutoCheckUpdatesHint}>
+        <Toggle checked={s.autoCheckUpdates} onChange={v => set({ autoCheckUpdates: v })} />
+      </Row>
+
+      {/* Manual check area */}
+      <div className="settings-update-card">
+        {status.kind === "idle" && (
+          <button className="settings-check-btn" onClick={handleCheck}>
+            <RefreshCw size={13} />
+            {t.settingsCheckNow}
+          </button>
+        )}
+
+        {status.kind === "checking" && (
+          <div className="settings-update-state settings-update-checking">
+            <RefreshCw size={14} className="settings-spin" />
+            {t.settingsChecking}
+          </div>
+        )}
+
+        {status.kind === "upToDate" && (
+          <div className="settings-update-state settings-update-ok">
+            <CheckCircle size={14} />
+            {t.settingsUpToDate}
+            <button className="settings-check-again-btn" onClick={handleCheck}>
+              <RefreshCw size={11} />
+            </button>
+          </div>
+        )}
+
+        {status.kind === "available" && (
+          <div className="settings-update-available">
+            <div className="settings-update-header">
+              <Sparkles size={14} className="settings-update-sparkle" />
+              <span className="settings-update-version">{t.settingsUpdateAvailable(status.version)}</span>
+            </div>
+            {status.body && (
+              <details className="settings-update-notes">
+                <summary>{t.settingsUpdateNotes}</summary>
+                <pre className="settings-update-body">{status.body}</pre>
+              </details>
+            )}
+            <button className="settings-install-btn" onClick={handleInstall}>
+              <Download size={13} />
+              {t.settingsInstallUpdate}
+            </button>
+          </div>
+        )}
+
+        {status.kind === "installing" && (
+          <div className="settings-update-state settings-update-checking">
+            <RefreshCw size={14} className="settings-spin" />
+            {t.settingsInstalling}
+          </div>
+        )}
+
+        {status.kind === "error" && (
+          <div className="settings-update-state settings-update-error">
+            <AlertCircle size={14} style={{ flexShrink: 0 }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div>{t.settingsUpdateError}</div>
+              <div className="settings-update-errormsg">
+                {/* Show a friendly hint for the most common errors */}
+                {status.message.toLowerCase().includes("fetch") ||
+                 status.message.toLowerCase().includes("network") ||
+                 status.message.toLowerCase().includes("remote") ||
+                 status.message.toLowerCase().includes("404") ||
+                 status.message.toLowerCase().includes("json")
+                  ? t.settingsUpdateNetworkError
+                  : status.message}
+              </div>
+            </div>
+            <button className="settings-check-again-btn" onClick={handleCheck} style={{ flexShrink: 0 }}>
+              <RefreshCw size={11} />
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── main component ────────────────────────────────────────────────────────────
 export function SettingsModal({ isOpen, onClose, settings, onSave }: Props) {
   const t = useT();
@@ -225,6 +360,7 @@ export function SettingsModal({ isOpen, onClose, settings, onSave }: Props) {
     { id: "git",          label: t.settingsGitBehaviour,   icon: <GitBranch size={15} /> },
     { id: "editor",       label: t.settingsEditorTools,    icon: <Code2 size={15} /> },
     { id: "notifications",label: t.settingsNotifications,  icon: <Bell size={15} /> },
+    { id: "updates",      label: t.settingsUpdates,        icon: <RefreshCw size={15} /> },
   ];
 
   function handleOpen() {
@@ -281,6 +417,7 @@ export function SettingsModal({ isOpen, onClose, settings, onSave }: Props) {
                 {activeSection === "git"           && <GitSection           s={draft} set={patch} />}
                 {activeSection === "editor"        && <EditorSection        s={draft} set={patch} />}
                 {activeSection === "notifications" && <NotificationsSection s={draft} set={patch} />}
+                {activeSection === "updates"       && <UpdatesSection       s={draft} set={patch} />}
               </div>
             </div>
 

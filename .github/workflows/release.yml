@@ -99,6 +99,33 @@ jobs:
       - name: Install JS dependencies
         run: npm ci
 
+      - name: Inject version from git tag
+        shell: bash
+        run: |
+          # Strip leading 'v' from tag  (v1.2.3 -> 1.2.3)
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "Building version: $VERSION"
+
+          # Update both tauri.conf.json AND tauri.linux.conf.json so the Linux
+          # build (which swaps in the linux config) also gets the correct version.
+          for cfg in src-tauri/tauri.conf.json src-tauri/tauri.linux.conf.json; do
+            node -e "
+              const fs = require('fs');
+              const cfg = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+              cfg.version = process.argv[2];
+              fs.writeFileSync(process.argv[1], JSON.stringify(cfg, null, 2) + '\n');
+            " "$cfg" "$VERSION"
+          done
+
+          # Update Cargo.toml (first [package] version field only)
+          sed -i.bak "0,/^version = \".*\"/{s/^version = \".*\"/version = \"$VERSION\"/}" \
+            src-tauri/Cargo.toml
+          rm -f src-tauri/Cargo.toml.bak
+
+          echo "tauri.conf.json version: $(node -e "console.log(require('./src-tauri/tauri.conf.json').version)")"
+          echo "tauri.linux.conf.json version: $(node -e "console.log(require('./src-tauri/tauri.linux.conf.json').version)")"
+          echo "Cargo.toml version: $(grep '^version' src-tauri/Cargo.toml | head -1)"
+
       - name: Use Linux config (disable window transparency)
         if: startsWith(matrix.platform, 'linux')
         run: cp src-tauri/tauri.linux.conf.json src-tauri/tauri.conf.json
@@ -191,6 +218,62 @@ jobs:
           echo "**Full Changelog:** https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
 
+      - name: Generate latest.json (updater feed)
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"   # strip leading 'v'
+          REPO="${{ github.repository }}"
+          BASE="https://github.com/${REPO}/releases/download/${{ github.ref_name }}"
+
+          # Build the platforms block — only include files that were actually built.
+          PLATFORMS="{}"
+
+          # macOS universal DMG
+          if ls dist-packages/*.dmg 2>/dev/null | head -1 | grep -q .; then
+            DMG=$(ls dist-packages/*.dmg | head -1 | xargs basename)
+            PLATFORMS=$(echo "$PLATFORMS" | python3 -c "
+          import json, sys
+          p = json.load(sys.stdin)
+          p['darwin-universal'] = {'url': '${BASE}/${DMG}', 'signature': ''}
+          print(json.dumps(p))")
+          fi
+
+          # Linux AppImage
+          if ls dist-packages/*.AppImage 2>/dev/null | head -1 | grep -q .; then
+            AI=$(ls dist-packages/*.AppImage | head -1 | xargs basename)
+            PLATFORMS=$(echo "$PLATFORMS" | python3 -c "
+          import json, sys
+          p = json.load(sys.stdin)
+          p['linux-x86_64'] = {'url': '${BASE}/${AI}', 'signature': ''}
+          print(json.dumps(p))")
+          fi
+
+          # Windows x64 NSIS installer
+          if ls dist-packages/*x64-setup.exe 2>/dev/null | head -1 | grep -q .; then
+            EXE=$(ls dist-packages/*x64-setup.exe | head -1 | xargs basename)
+            PLATFORMS=$(echo "$PLATFORMS" | python3 -c "
+          import json, sys
+          p = json.load(sys.stdin)
+          p['windows-x86_64'] = {'url': '${BASE}/${EXE}', 'signature': ''}
+          print(json.dumps(p))")
+          fi
+
+          # Write latest.json
+          python3 -c "
+          import json, sys
+          platforms = json.loads(sys.argv[1])
+          doc = {
+            'version': sys.argv[2],
+            'notes': 'See release page for full changelog.',
+            'pub_date': '$(date -u +%Y-%m-%dT%H:%M:%SZ)',
+            'platforms': platforms,
+          }
+          print(json.dumps(doc, indent=2))
+          " "$PLATFORMS" "$VERSION" > dist-packages/latest.json
+
+          echo "Generated latest.json:"
+          cat dist-packages/latest.json
+
       - name: Create GitHub Release and upload assets
         uses: softprops/action-gh-release@v2
         with:
@@ -206,5 +289,6 @@ jobs:
             dist-packages/**/*.AppImage
             dist-packages/**/*.msi
             dist-packages/**/*.exe
+            dist-packages/latest.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

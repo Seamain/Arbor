@@ -16,13 +16,14 @@ import { ConflictModal } from "./components/ConflictModal";
 import { LocalChangesModal } from "./components/LocalChangesModal";
 import { ContextMenu } from "./components/ContextMenu";
 import { SettingsModal } from "./components/SettingsModal";
+import { AboutModal } from "./components/AboutModal";
 import { AppSettings, loadSettings, saveSettings } from "./settings";
 import { ensureNotificationPermission, notify } from "./notify";
 import { GitProvider, loadProviders, saveProviders, matchRemoteToProvider, createPrUrl } from "./providers";
 import { ProvidersModal } from "./components/ProvidersModal";
 import { CloneModal } from "./components/CloneModal";
 import { PullRequestsPanel } from "./components/PullRequestsPanel";
-import { I18nContext, getTranslations } from "./i18n";
+import { I18nContext, getTranslations, useT } from "./i18n";
 
 // ─── persistence ────────────────────────────────────────────────────────────
 const HISTORY_KEY = "arbor-repo-history";
@@ -138,6 +139,7 @@ export default function App() {
   const [providers, setProviders] = useState<GitProvider[]>(loadProviders);
   const [isProvidersOpen, setIsProvidersOpen] = useState(false);
   const [isCloneOpen, setIsCloneOpen] = useState(false);
+  const [isAboutOpen, setIsAboutOpen] = useState(false);
 
   function handleSaveSettings(s: AppSettings) {
     setSettings(s);
@@ -159,6 +161,25 @@ export default function App() {
     // Request notification permission early so the macOS system dialog
     // appears at startup rather than mid-operation.
     ensureNotificationPermission().catch(() => {});
+
+    // Auto-check for updates on launch (if the setting is enabled).
+    // We wait 3 s so it doesn't block the initial repo-load path.
+    if (settings.autoCheckUpdates) {
+      const tid = setTimeout(() => {
+        invoke<{ version: string; body: string | null } | null>("check_for_updates")
+          .then(info => {
+            if (info) {
+              notify(
+                "Arbor Update Available",
+                `Version ${info.version} is ready — open Settings → Updates to install.`,
+              ).catch(() => {});
+            }
+          })
+          .catch(() => {}); // silently ignore network failures
+      }, 3000);
+      return () => clearTimeout(tid);
+    }
+    return undefined;
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Context menu state ──────────────────────────────────────────────────
@@ -249,18 +270,18 @@ export default function App() {
       x: e.clientX, y: e.clientY,
       items: [
         {
-          label: "Refresh",
+          label: tr.ctxRefresh,
           icon: <RefreshCw size={13} />,
           onClick: () => fullRefresh(tabPath),
         },
         {
-          label: "Fetch",
+          label: tr.ctxFetch,
           icon: <ArrowDownToLine size={13} />,
           onClick: () => runCommand(tabPath, "git_fetch", "Fetch", { path: tabPath }),
         },
         { divider: true, label: "", onClick: () => {} },
         {
-          label: "Close Tab",
+          label: tr.ctxCloseTab,
           icon: <X size={13} />,
           danger: true,
           onClick: () => closeTab(tabPath),
@@ -276,12 +297,12 @@ export default function App() {
       x: e.clientX, y: e.clientY,
       items: [
         {
-          label: "Refresh History",
+          label: tr.ctxRefreshHistory,
           icon: <History size={13} />,
           onClick: () => fullRefresh(path),
         },
         {
-          label: "Fetch All",
+          label: tr.ctxFetchAll,
           icon: <RefreshCw size={13} />,
           onClick: () => runCommand(path, "git_fetch", "Fetch", { path }),
         },
@@ -431,6 +452,12 @@ export default function App() {
         case "app_settings":
           setIsSettingsOpen(true);
           break;
+        case "check_for_update":
+          setIsSettingsOpen(true);
+          break;
+        case "app_about":
+          setIsAboutOpen(true);
+          break;
       }
     }).then(fn => { unlisten = fn; });
     return () => { unlisten?.(); };
@@ -561,7 +588,7 @@ export default function App() {
     await runCommand(path, "git_checkout", `Checkout ${target}`, { path, branch: target });
     // After checkout, auto-fetch to get accurate behind count for the new branch
     try {
-      addLog(path, "info", `Fetching remote info for ${target}...`);
+      addLog(path, "info", tr.logFetchingRemoteInfo(target));
       await invoke("git_fetch", { path });
       await fullRefresh(path);
     } catch { /* fetch may fail if offline, that's ok */ }
@@ -594,46 +621,46 @@ export default function App() {
       const diff = await invoke<string>("git_diff", { path, filePath: file });
       patchTab(path, { fileDiff: diff });
     } catch {
-      addLog(path, "error", `Failed to get diff for ${file}`);
+      addLog(path, "error", tr.logError(`Failed to get diff for ${file}`));
     } finally {
       patchTabLoading(path, "Diff", false);
     }
   }
 
   async function discardFile(path: string, file: string) {
-    const confirmed = window.confirm(`Discard all changes in ${file}?`);
+    const confirmed = window.confirm(tr.confirmDiscardFile(file));
     if (!confirmed) return;
 
     patchTabLoading(path, "Discard", true);
-    addLog(path, "command", `Discarding ${file}...`);
+    addLog(path, "command", tr.logDiscardingFile(file));
     try {
       await invoke<string>("git_discard_file", { path, filePath: file });
-      addLog(path, "success", `Discarded changes in ${file}.`);
+      addLog(path, "success", tr.logDiscardedFile(file));
       const current = tabsRef.current.find(tab => tab.path === path);
       if (current?.selectedFile === file) {
         patchTab(path, { selectedFile: null, fileDiff: "", selectedTab: "history" });
       }
       await fullRefresh(path);
     } catch (e) {
-      addLog(path, "error", `Failed to discard ${file}: ${e}`);
+      addLog(path, "error", tr.logDiscardFileFailed(file, String(e)));
     } finally {
       patchTabLoading(path, "Discard", false);
     }
   }
 
   async function discardAllChanges(path: string) {
-    const confirmed = window.confirm("Discard all local changes and untracked files?");
+    const confirmed = window.confirm(tr.confirmDiscardAll);
     if (!confirmed) return;
 
     patchTabLoading(path, "Discard All", true);
-    addLog(path, "command", "Discarding all changes...");
+    addLog(path, "command", tr.logDiscardingAll);
     try {
       await invoke<string>("git_discard_all_changes", { path });
-      addLog(path, "success", "Discarded all local changes.");
+      addLog(path, "success", tr.logDiscardedAll);
       patchTab(path, { selectedFile: null, fileDiff: "", selectedTab: "history" });
       await fullRefresh(path);
     } catch (e) {
-      addLog(path, "error", `Failed to discard all changes: ${e}`);
+      addLog(path, "error", tr.logDiscardAllFailed(String(e)));
     } finally {
       patchTabLoading(path, "Discard All", false);
     }
@@ -739,7 +766,7 @@ export default function App() {
         {/* Open tabs */}
         <div className="flex-1 overflow-y-auto py-2">
           {!sidebarCollapsed && tabs.length === 0 && (
-            <p className="text-sm text-default-400 text-center mt-8 px-4">No repositories open</p>
+            <p className="text-sm text-default-400 text-center mt-8 px-4">{tr.noReposOpen}</p>
           )}
           {tabs.map(tab => {
             const isActive = tab.path === activeTabPath;
@@ -897,6 +924,14 @@ export default function App() {
                 </ul>
               </div>
             )}
+
+            {/* About link */}
+            <button
+              className="about-welcome-link"
+              onClick={() => setIsAboutOpen(true)}
+            >
+              {tr.aboutArbor}
+            </button>
           </div>
         )}
 
@@ -1025,7 +1060,7 @@ export default function App() {
                   {remoteBranches.length > 0 && (
                     <div className="mt-2">
                       <div className="flex items-center gap-1.5 px-3 py-1.5 mb-0.5">
-                        <span className="panel-title">Remote</span>
+                        <span className="panel-title">{tr.branchesRemote}</span>
                         <span className="count-pill">{remoteBranches.length}</span>
                       </div>
                       {remoteBranches.map(b => {
@@ -1133,7 +1168,7 @@ export default function App() {
                 <div className="workspace-tabs flex px-5 pt-3 gap-6 shrink-0 liquid-glass-header z-10 relative">
                   {[
                     { key: "history", icon: <History size={16} />, label: tr.gitGraph },
-                    { key: "diff",    icon: <FileCode size={16} />, label: "Diff", disabled: !tab.selectedFile },
+                    { key: "diff",    icon: <FileCode size={16} />, label: tr.tabDiff, disabled: !tab.selectedFile },
                   ].map(wtab => (
                     <button
                       key={wtab.key}
@@ -1287,6 +1322,12 @@ export default function App() {
         providers={providers}
         onCloned={repoPath => openRepo(repoPath)}
       />
+
+      {/* About modal */}
+      <AboutModal
+        isOpen={isAboutOpen}
+        onClose={() => setIsAboutOpen(false)}
+      />
     </div>
     </I18nContext.Provider>
   );
@@ -1363,6 +1404,12 @@ function parseDiff(raw: string): DiffLine[] {
 }
 
 function DiffPanel({ file, diff, loading }: { file: string | null; diff: string; loading: boolean }) {
+  const tr = getTranslations("en"); // Temporary fallback since we are outside the provider context
+  // Wait, I shouldn't just fetch en inside the component, but we can't easily hook without refactoring.
+  // Actually, I can use `useT()` if I make DiffPanel use it. Wait, `useT` uses context.
+  // Let me just add `useT()` to DiffPanel.
+  const t = useT();
+
   if (loading) return <div className="flex-1 flex items-center justify-center"><Spinner /></div>;
 
   const parsed = diff ? parseDiff(diff) : [];
@@ -1380,8 +1427,8 @@ function DiffPanel({ file, diff, loading }: { file: string | null; diff: string;
         {!diff || !hasContent ? (
           <div className="flex flex-col items-center justify-center h-full gap-2 text-default-400">
             <FileCode size={32} className="opacity-30" />
-            <p className="text-base">No differences found</p>
-            <p className="text-sm">The file matches the last commit</p>
+            <p className="text-base">{t.diffNoChanges}</p>
+            <p className="text-sm">{t.diffNoChangesHint}</p>
           </div>
         ) : (
           <table className="diff-table w-full border-collapse text-sm font-mono">
@@ -1451,5 +1498,14 @@ function DiffPanel({ file, diff, loading }: { file: string | null; diff: string;
         )}
       </div>
     </div>
+  );
+}
+         </table>
+        )}
+      </div>
+    </div>
+  );
+}
+</div>
   );
 }
