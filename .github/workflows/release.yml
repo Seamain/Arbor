@@ -99,6 +99,10 @@ jobs:
       - name: Install JS dependencies
         run: npm ci
 
+      - name: Use Linux config (disable window transparency)
+        if: startsWith(matrix.platform, 'linux')
+        run: cp src-tauri/tauri.linux.conf.json src-tauri/tauri.conf.json
+
       - name: Build Tauri app
         run: npx tauri build ${{ matrix.args }}
         env:

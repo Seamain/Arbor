@@ -45,9 +45,8 @@ fn make_callbacks<'a>() -> RemoteCallbacks<'a> {
             let user = username.unwrap_or("git");
 
             // Try SSH agent — ignore banner/connection errors silently.
-            match git2::Cred::ssh_key_from_agent(user) {
-                Ok(cred) => return Ok(cred),
-                Err(_) => {} // agent not running or banner error — fall through
+            if let Ok(cred) = git2::Cred::ssh_key_from_agent(user) {
+                return Ok(cred);
             }
 
             // Try key files from ~/.ssh in order of preference.

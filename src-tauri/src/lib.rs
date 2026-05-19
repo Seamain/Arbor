@@ -156,18 +156,16 @@ pub fn run() {
                 let _ = apply_acrylic(&window, Some((245, 248, 252, 200)));
             }
 
-            // ── Linux: no native blur — disable transparency, force solid BG ──
+            // ── Linux: no native blur — force solid background via JS ────────
             #[cfg(target_os = "linux")]
             {
                 // Most Linux compositors don't support backdrop-filter or
-                // transparent Tauri windows. Disable the window's transparency
-                // so the OS draws a proper opaque frame, then tell the frontend
-                // to switch from its glass CSS to solid fallback colours.
-                let _ = window.set_transparent(false);
-
-                // set_transparent may not fire before first paint, so we also
-                // inject the attribute as early as possible via a script that
-                // runs synchronously in the document head.
+                // transparent Tauri windows. Tell the frontend to switch from
+                // its glass CSS to the solid-colour fallback palette.
+                // (WebviewWindow has no set_transparent API in Tauri v2;
+                // transparency is controlled only via tauri.conf.json. The
+                // index.html inline script handles the pre-paint case; this
+                // eval covers any edge cases where the attribute was not set.)
                 let _ = window.eval(
                     "document.documentElement.setAttribute('data-platform','linux'); \
                      document.documentElement.style.background='#f1f4f8'; \
