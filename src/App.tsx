@@ -8,7 +8,7 @@ import {
   Terminal, FolderOpen, FileCode, GitBranch, Plus, Check,
   MoreVertical, History, X, GitCommitHorizontal, Clock, TriangleAlert,
   ChevronDown, ChevronUp, RotateCcw, Trash2, PanelLeftClose, PanelLeftOpen,
-  ArchiveRestore, Eye, GitMerge, Settings, UserCircle2, Download,
+  ArchiveRestore, Eye, GitMerge, Settings, UserCircle2, Download, Sparkles,
 } from "lucide-react";
 import "./App.css";
 import { GitGraphViewer } from "./components/GitGraphViewer";
@@ -74,6 +74,7 @@ interface RepoTab {
   selectedTab: "history" | "diff";
   consoleOpen: boolean;
   remoteUrl: string | null;  // origin remote URL, fetched once on open
+  commitMessage: string;
 }
 
 function makeTab(path: string): RepoTab {
@@ -83,7 +84,7 @@ function makeTab(path: string): RepoTab {
     status: "", headOid: "", headBranch: "", behindCount: 0, hasConflicts: false,
     branches: [], modifiedFiles: [], historyLogs: [],
     logs: [], loading: {}, selectedFile: null, fileDiff: "",
-    selectedTab: "history", consoleOpen: false, remoteUrl: null,
+    selectedTab: "history", consoleOpen: false, remoteUrl: null, commitMessage: "",
   };
 }
 
@@ -666,6 +667,61 @@ export default function App() {
     }
   }
 
+
+  async function handleCommit(path: string) {
+    const currentTab = tabs.find(t => t.path === path);
+    if (!currentTab) return;
+    const message = currentTab.commitMessage.trim();
+    if (!message) return;
+
+    patchTabLoading(path, "Commit", true);
+    addLog(path, "command", tr.logRunningCommand("Commit"));
+    try {
+      await invoke<string>("git_add_all", { path });
+      await invoke<string>("git_commit", { path, message });
+      addLog(path, "success", tr.logSuccessCommand("Commit"));
+      patchTab(path, { commitMessage: "", selectedFile: null, fileDiff: "", selectedTab: "history" });
+      await fullRefresh(path);
+    } catch (e) {
+      addLog(path, "error", tr.logError(String(e)));
+    } finally {
+      patchTabLoading(path, "Commit", false);
+    }
+  }
+
+  async function handleAiGenerate(path: string) {
+    const cfg = settingsRef.current;
+    patchTabLoading(path, "AiGenerate", true);
+    addLog(path, "command", tr.aiGenerating);
+    try {
+      let msg: string;
+      if (cfg.aiUseLocalModel) {
+        if (!cfg.aiLocalModel) {
+          addLog(path, "error", tr.aiNoLocalModel);
+          return;
+        }
+        msg = await invoke<string>("ai_generate_commit_local", {
+          path,
+          modelName: cfg.aiLocalModel,
+        });
+      } else {
+        if (!cfg.aiApiKey) {
+          addLog(path, "error", tr.aiNoApiKey);
+          return;
+        }
+        msg = await invoke<string>("ai_generate_commit", {
+          path,
+          config: { endpoint: cfg.aiEndpoint, apiKey: cfg.aiApiKey, model: cfg.aiModel },
+        });
+      }
+      if (msg) patchTab(path, { commitMessage: msg });
+      addLog(path, "success", tr.aiGenerated);
+    } catch (e) {
+      addLog(path, "error", tr.logError(String(e)));
+    } finally {
+      patchTabLoading(path, "AiGenerate", false);
+    }
+  }
   // ─── render ──────────────────────────────────────────────────────────────
   const tab = activeTab;
   const isAnyLoading = tab ? Object.values(tab.loading).some(Boolean) : false;
@@ -1141,6 +1197,40 @@ export default function App() {
                     ))
                   }
                 </div>
+                {/* Commit area */}
+                <div className="shrink-0 border-t border-default-200 p-3 flex flex-col gap-2">
+                  <textarea
+                    className="w-full px-2.5 py-2 rounded-md border border-default-200 bg-content1 text-sm outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition resize-none"
+                    rows={3}
+                    placeholder={tr.commitMsgPlaceholder}
+                    value={tab.commitMessage}
+                    onChange={e => patchTab(tab.path, { commitMessage: e.target.value })}
+                    onKeyDown={e => {
+                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                        e.preventDefault();
+                        handleCommit(tab.path);
+                      }
+                    }}
+                  />
+                  <div className="flex gap-1.5">
+                    <button
+                      className="shrink-0 px-2 py-1.5 rounded-md text-sm transition-colors flex items-center justify-center border border-default-200 text-default-500 hover:text-primary hover:border-primary/40 disabled:opacity-50 disabled:cursor-not-allowed"
+                      onClick={() => handleAiGenerate(tab.path)}
+                      disabled={!!tab.loading["AiGenerate"] || tab.modifiedFiles.length === 0}
+                      title={tr.aiGenerate}
+                    >
+                      {tab.loading["AiGenerate"] ? <Spinner size="sm" color="current" /> : <Sparkles size={14} />}
+                    </button>
+                    <button
+                      className="flex-1 px-3 py-1.5 rounded-md text-sm font-semibold transition-colors flex items-center justify-center gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                      onClick={() => handleCommit(tab.path)}
+                      disabled={!tab.commitMessage.trim() || !!tab.loading["Commit"]}
+                    >
+                      {tab.loading["Commit"] ? <Spinner size="sm" color="current" /> : <GitCommitHorizontal size={14} />}
+                      <span>{tr.commit}</span>
+                    </button>
+                  </div>
+                </div>
               </div>
 
               {/* Main panel */}
@@ -1404,10 +1494,6 @@ function parseDiff(raw: string): DiffLine[] {
 }
 
 function DiffPanel({ file, diff, loading }: { file: string | null; diff: string; loading: boolean }) {
-  const tr = getTranslations("en"); // Temporary fallback since we are outside the provider context
-  // Wait, I shouldn't just fetch en inside the component, but we can't easily hook without refactoring.
-  // Actually, I can use `useT()` if I make DiffPanel use it. Wait, `useT` uses context.
-  // Let me just add `useT()` to DiffPanel.
   const t = useT();
 
   if (loading) return <div className="flex-1 flex items-center justify-center"><Spinner /></div>;
@@ -1498,14 +1584,5 @@ function DiffPanel({ file, diff, loading }: { file: string | null; diff: string;
         )}
       </div>
     </div>
-  );
-}
-         </table>
-        )}
-      </div>
-    </div>
-  );
-}
-</div>
   );
 }

@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { Modal } from "@heroui/react";
-import { Palette, GitBranch, Code2, Bell, RefreshCw, RotateCcw, X, Download, CheckCircle, AlertCircle, Sparkles } from "lucide-react";
+import { Palette, GitBranch, Code2, Bell, RefreshCw, RotateCcw, X, Download, CheckCircle, AlertCircle, Sparkles, Cpu } from "lucide-react";
 import {
   AppSettings, DEFAULT_SETTINGS, Theme, PullStrategy, GlassIntensity, Language,
 } from "../settings";
@@ -16,7 +16,7 @@ interface Props {
   onSave: (s: AppSettings) => void;
 }
 
-type Section = "appearance" | "git" | "editor" | "notifications" | "updates";
+type Section = "appearance" | "git" | "editor" | "ai" | "notifications" | "updates";
 
 // ── small primitives ──────────────────────────────────────────────────────────
 function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -349,6 +349,109 @@ function UpdatesSection({ s, set }: { s: AppSettings; set: (p: Partial<AppSettin
   );
 }
 
+// ── AI section ────────────────────────────────────────────────────────────────
+const RECOMMENDED_MODELS = [
+  {
+    name: "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+    url: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+    label: "Qwen2.5 0.5B (Q4_K_M, ~400MB)",
+  },
+  {
+    name: "tinyllama-1.1b-chat-v1.0.q4_k_m.gguf",
+    url: "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
+    label: "TinyLlama 1.1B Chat (Q4_K_M, ~670MB)",
+  },
+];
+
+function AISection({ s, set }: { s: AppSettings; set: (p: Partial<AppSettings>) => void }) {
+  const t = useT();
+  const [localModels, setLocalModels] = useState<string[]>([]);
+  const [modelsDir, setModelsDir] = useState<string>("");
+  const [downloading, setDownloading] = useState<boolean>(false);
+  const [downloadStatus, setDownloadStatus] = useState<string>("");
+
+  useEffect(() => {
+    invoke<string[]>("ai_list_local_models").then(setLocalModels).catch(() => {});
+    invoke<string>("ai_models_dir").then(setModelsDir).catch(() => {});
+  }, []);
+
+  async function handleDownload(url: string, filename: string) {
+    setDownloading(true);
+    setDownloadStatus(t.aiDownloading);
+    try {
+      await invoke("ai_download_model", { url, filename });
+      setDownloadStatus(t.aiDownloadSuccess);
+      const models = await invoke<string[]>("ai_list_local_models");
+      setLocalModels(models);
+      set({ aiLocalModel: filename });
+    } catch (e) {
+      setDownloadStatus(`${t.aiDownloadError}: ${e}`);
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  return (
+    <div className="settings-section-body">
+      <Row label={t.aiUseLocalModel} hint={t.aiUseLocalModelHint}>
+        <Toggle checked={s.aiUseLocalModel} onChange={v => set({ aiUseLocalModel: v })} />
+      </Row>
+
+      {s.aiUseLocalModel ? (
+        <>
+          <Row label={t.aiLocalModelLabel} hint={t.aiLocalModelHint}>
+            {localModels.length > 0 ? (
+              <Select
+                value={s.aiLocalModel}
+                onChange={v => set({ aiLocalModel: v })}
+                options={localModels.map(m => ({ value: m, label: m }))}
+              />
+            ) : (
+              <span className="text-xs text-default-500">{t.aiNoLocalModel}</span>
+            )}
+          </Row>
+          <Row label={t.aiModelsDir} hint={t.aiModelsDirHint}>
+            <span className="text-xs text-default-500 font-mono">{modelsDir || "…"}</span>
+          </Row>
+          <div className="settings-row">
+            <div className="settings-row-label">
+              <span className="settings-label">{t.aiDownloadModel}</span>
+              <span className="settings-hint">{t.aiDownloadModelHint}</span>
+            </div>
+            <div className="settings-control flex flex-col gap-2">
+              {RECOMMENDED_MODELS.map(m => (
+                <button
+                  key={m.name}
+                  className="toolbar-button px-3 py-1.5 text-xs rounded-lg"
+                  disabled={downloading || localModels.includes(m.name)}
+                  onClick={() => handleDownload(m.url, m.name)}
+                >
+                  {localModels.includes(m.name) ? "✓ " : ""}{m.label}
+                </button>
+              ))}
+              {downloadStatus && (
+                <span className="text-xs text-default-500">{downloadStatus}</span>
+              )}
+            </div>
+          </div>
+        </>
+      ) : (
+        <>
+          <Row label={t.aiEndpoint} hint={t.aiEndpointHint}>
+            <TextInput value={s.aiEndpoint} onChange={v => set({ aiEndpoint: v })} placeholder="https://api.openai.com/v1" />
+          </Row>
+          <Row label={t.aiApiKeyLabel} hint={t.aiApiKeyHint}>
+            <TextInput value={s.aiApiKey} onChange={v => set({ aiApiKey: v })} placeholder="sk-..." />
+          </Row>
+          <Row label={t.aiModelLabel} hint={t.aiModelHint}>
+            <TextInput value={s.aiModel} onChange={v => set({ aiModel: v })} placeholder="gpt-4o-mini" />
+          </Row>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── main component ────────────────────────────────────────────────────────────
 export function SettingsModal({ isOpen, onClose, settings, onSave }: Props) {
   const t = useT();
@@ -359,6 +462,7 @@ export function SettingsModal({ isOpen, onClose, settings, onSave }: Props) {
     { id: "appearance",    label: t.settingsAppearance,    icon: <Palette size={15} /> },
     { id: "git",          label: t.settingsGitBehaviour,   icon: <GitBranch size={15} /> },
     { id: "editor",       label: t.settingsEditorTools,    icon: <Code2 size={15} /> },
+    { id: "ai",           label: t.aiCommitMessage,        icon: <Cpu size={15} /> },
     { id: "notifications",label: t.settingsNotifications,  icon: <Bell size={15} /> },
     { id: "updates",      label: t.settingsUpdates,        icon: <RefreshCw size={15} /> },
   ];
@@ -416,6 +520,7 @@ export function SettingsModal({ isOpen, onClose, settings, onSave }: Props) {
                 {activeSection === "appearance"    && <AppearanceSection    s={draft} set={patch} />}
                 {activeSection === "git"           && <GitSection           s={draft} set={patch} />}
                 {activeSection === "editor"        && <EditorSection        s={draft} set={patch} />}
+                {activeSection === "ai"            && <AISection            s={draft} set={patch} />}
                 {activeSection === "notifications" && <NotificationsSection s={draft} set={patch} />}
                 {activeSection === "updates"       && <UpdatesSection       s={draft} set={patch} />}
               </div>

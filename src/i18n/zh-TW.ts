@@ -247,4 +247,29 @@ export const zhTW: Translations = {
 
   // ── Settings Extra ─────────────────────────────────────────────────────────
   settingsUpdateNetworkError: "無法連線至更新伺服器，請檢查網路連線後再試一次。",
+
+  // ── AI commit generation ──────────────────────────────────────────────────
+  aiGenerate: "使用 AI 產生提交訊息",
+  aiGenerating: "正在產生提交訊息…",
+  aiGenerated: "AI 提交訊息已產生。",
+  aiNoApiKey: "請先在設定中設定 AI API 金鑰。",
+  aiCommitMessage: "AI 提交訊息",
+  aiEndpoint: "API 端點",
+  aiEndpointHint: "OpenAI 相容的基礎 URL（例如 https://api.openai.com/v1）",
+  aiApiKeyLabel: "API 金鑰",
+  aiApiKeyHint: "您的 API 金鑰，本機儲存",
+  aiModelLabel: "模型",
+  aiModelHint: "例如 gpt-4o-mini、qwen2.5:0.5b",
+  aiUseLocalModel: "使用本機模型",
+  aiUseLocalModelHint: "使用本機 GGUF 模型而非 API",
+  aiLocalModelLabel: "本機模型",
+  aiLocalModelHint: "從模型目錄中選擇 GGUF 模型",
+  aiNoLocalModel: "未找到本機模型。請將 .gguf 檔案放置在模型目錄中。",
+  aiModelsDir: "模型目錄",
+  aiModelsDirHint: "包含 GGUF 模型檔案的目錄",
+  aiDownloadModel: "下載模型",
+  aiDownloadModelHint: "下載用於產生提交訊息的輕量級 GGUF 模型",
+  aiDownloading: "正在下載模型…",
+  aiDownloadSuccess: "模型下載成功。",
+  aiDownloadError: "模型下載失敗。",
 };

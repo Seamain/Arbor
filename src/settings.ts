@@ -29,6 +29,13 @@ export interface AppSettings {
 
   // Updates
   autoCheckUpdates: boolean;  // check on app launch
+
+  // AI commit message generation
+  aiEndpoint: string;       // OpenAI-compatible base URL
+  aiApiKey: string;         // API key (kept in local storage)
+  aiModel: string;          // model name, e.g. "gpt-4o-mini"
+  aiUseLocalModel: boolean; // use local GGUF model instead of API
+  aiLocalModel: string;     // local GGUF model filename
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -50,6 +57,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   notifyOnPull: false,
 
   autoCheckUpdates: true,
+
+  aiEndpoint: "https://api.openai.com/v1",
+  aiApiKey: "",
+  aiModel: "gpt-4o-mini",
+  aiUseLocalModel: false,
+  aiLocalModel: "",
 };
 
 const SETTINGS_KEY = "arbor-settings";

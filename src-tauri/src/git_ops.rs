@@ -1,5 +1,5 @@
 use git2::{
-    BranchType, build::CheckoutBuilder, DiffOptions, FetchOptions, MergeOptions,
+    BranchType, build::CheckoutBuilder, DiffFormat, DiffOptions, FetchOptions, MergeOptions,
     PushOptions, RemoteCallbacks, Repository, ResetType, StashFlags,
 };
 use std::path::Path;
@@ -1202,4 +1202,173 @@ pub async fn git_remote_url(path: String) -> Result<String, String> {
     let repo = open(&path)?;
     let remote = repo.find_remote("origin").map_err(|e| e.to_string())?;
     Ok(remote.url().unwrap_or("").to_string())
+}
+
+#[tauri::command]
+pub async fn git_add_all(path: String) -> Result<String, String> {
+    let repo = open(&path)?;
+    let mut index = repo.index().map_err(|e| e.to_string())?;
+    index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None).map_err(|e| e.to_string())?;
+    index.write().map_err(|e| e.to_string())?;
+    Ok(String::new())
+}
+
+/// Collect a unified diff of all modified files, capped at `max_chars` to stay
+/// within typical LLM context limits.
+fn collect_diffs(repo_path: &str, max_chars: usize) -> Result<String, String> {
+    let repo = open(repo_path)?;
+    let statuses = repo.statuses(None).map_err(|e| e.to_string())?;
+    let mut combined = String::new();
+
+    for entry in statuses.iter() {
+        let s = entry.status();
+        if s.is_empty() || s.contains(git2::Status::IGNORED) {
+            continue;
+        }
+        let Some(path) = entry.path() else { continue };
+        // Per-file diff (staged + unstaged)
+        let mut opts = DiffOptions::new();
+        opts.pathspec(path);
+
+        let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+        let mut file_diff = String::new();
+
+        // staged
+        if let Ok(d) = repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts)) {
+            let _ = d.print(DiffFormat::Patch, |_delta, _hunk, line| {
+                file_diff.push_str(std::str::from_utf8(line.content()).unwrap_or(""));
+                true
+            });
+        }
+        // unstaged
+        let mut opts2 = DiffOptions::new();
+        opts2.pathspec(path);
+        if let Ok(d) = repo.diff_index_to_workdir(None, Some(&mut opts2)) {
+            let _ = d.print(DiffFormat::Patch, |_delta, _hunk, line| {
+                file_diff.push_str(std::str::from_utf8(line.content()).unwrap_or(""));
+                true
+            });
+        }
+
+        if !file_diff.trim().is_empty() {
+            combined.push_str(&format!("--- {} ---\n{}\n", path, file_diff));
+            if combined.len() > max_chars {
+                combined.truncate(max_chars);
+                combined.push_str("\n... [truncated]");
+                break;
+            }
+        }
+    }
+    Ok(combined)
+}
+
+#[derive(serde::Deserialize)]
+pub struct AiConfig {
+    pub endpoint: String,
+    pub api_key: String,
+    pub model: String,
+}
+
+#[derive(serde::Serialize)]
+struct ChatMessage<'a> {
+    role: &'a str,
+    content: &'a str,
+}
+
+#[derive(serde::Serialize)]
+struct ChatRequest<'a> {
+    model: &'a str,
+    messages: Vec<ChatMessage<'a>>,
+    max_tokens: u32,
+    temperature: f32,
+}
+
+#[derive(serde::Deserialize)]
+struct ChatChoice {
+    message: Option<ChatMsgContent>,
+}
+#[derive(serde::Deserialize)]
+struct ChatMsgContent {
+    content: Option<String>,
+}
+#[derive(serde::Deserialize)]
+struct ChatResponse {
+    choices: Option<Vec<ChatChoice>>,
+}
+
+#[tauri::command]
+pub async fn ai_generate_commit(path: String, config: AiConfig) -> Result<String, String> {
+    let diffs = collect_diffs(&path, 12_000)?;
+    if diffs.trim().is_empty() {
+        return Err("No changes to describe.".into());
+    }
+
+    let prompt = format!(
+        "You are a commit-message generator. Based on the following git diff, produce a single concise commit message following the Conventional Commits spec (type: short description). Reply with ONLY the commit message, no explanation, no quotes, no markdown.\n\nDiff:\n{}",
+        diffs
+    );
+
+    let body = ChatRequest {
+        model: &config.model,
+        messages: vec![
+            ChatMessage { role: "system", content: "You generate concise git commit messages." },
+            ChatMessage { role: "user", content: &prompt },
+        ],
+        max_tokens: 120,
+        temperature: 0.3,
+    };
+
+    let url = format!("{}/chat/completions", config.endpoint.trim_end_matches('/'));
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", config.api_key))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {}", e))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("AI API error ({}): {}", status, text));
+    }
+
+    let data: ChatResponse = resp.json().await.map_err(|e| format!("Parse error: {}", e))?;
+    let msg = data
+        .choices
+        .and_then(|c| c.into_iter().next())
+        .and_then(|c| c.message)
+        .and_then(|m| m.content)
+        .unwrap_or_default();
+
+    Ok(msg.trim().to_string())
+}
+
+#[tauri::command]
+pub async fn ai_generate_commit_local(path: String, model_name: String) -> Result<String, String> {
+    let diffs = collect_diffs(&path, 12_000)?;
+    if diffs.trim().is_empty() {
+        return Err("No changes to describe.".into());
+    }
+
+    tokio::task::spawn_blocking(move || crate::local_ai::generate_commit_message(&diffs, &model_name))
+        .await
+        .map_err(|e| format!("Task failed: {}", e))?
+}
+
+#[tauri::command]
+pub async fn ai_list_local_models() -> Result<Vec<String>, String> {
+    Ok(crate::local_ai::list_local_models())
+}
+
+#[tauri::command]
+pub async fn ai_models_dir() -> Result<String, String> {
+    Ok(crate::local_ai::models_dir().to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub async fn ai_download_model(url: String, filename: String) -> Result<String, String> {
+    crate::local_ai::download_model(&url, &filename).await
 }

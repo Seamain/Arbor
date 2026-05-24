@@ -1,4 +1,5 @@
 mod git_ops;
+mod local_ai;
 mod oauth;
 
 use notify_debouncer_mini::{new_debouncer, notify::RecursiveMode, DebounceEventResult};
@@ -275,6 +276,12 @@ pub fn run() {
             git_ops::read_file_content,
             git_ops::write_file_content,
             git_ops::git_add,
+            git_ops::git_add_all,
+            git_ops::ai_generate_commit,
+            git_ops::ai_generate_commit_local,
+            git_ops::ai_list_local_models,
+            git_ops::ai_models_dir,
+            git_ops::ai_download_model,
             git_ops::git_commit,
             git_ops::git_stash,
             git_ops::git_auto_stash,

@@ -245,6 +245,31 @@ export const en = {
 
   // ── Settings Extra ─────────────────────────────────────────────────────────
   settingsUpdateNetworkError: "Could not reach the update server. Check your internet connection and try again.",
+
+  // ── AI commit generation ──────────────────────────────────────────────────
+  aiGenerate: "Generate commit message with AI",
+  aiGenerating: "Generating commit message…",
+  aiGenerated: "AI commit message generated.",
+  aiNoApiKey: "Please set your AI API key in Settings first.",
+  aiCommitMessage: "AI Commit Message",
+  aiEndpoint: "API Endpoint",
+  aiEndpointHint: "OpenAI-compatible base URL (e.g. https://api.openai.com/v1)",
+  aiApiKeyLabel: "API Key",
+  aiApiKeyHint: "Your API key, stored locally",
+  aiModelLabel: "Model",
+  aiModelHint: "e.g. gpt-4o-mini, qwen2.5:0.5b",
+  aiUseLocalModel: "Use Local Model",
+  aiUseLocalModelHint: "Use a local GGUF model instead of API",
+  aiLocalModelLabel: "Local Model",
+  aiLocalModelHint: "Select a GGUF model from the models directory",
+  aiNoLocalModel: "No local models found. Place .gguf files in the models directory.",
+  aiModelsDir: "Models Directory",
+  aiModelsDirHint: "Directory containing GGUF model files",
+  aiDownloadModel: "Download Model",
+  aiDownloadModelHint: "Download a lightweight GGUF model for commit message generation",
+  aiDownloading: "Downloading model…",
+  aiDownloadSuccess: "Model downloaded successfully.",
+  aiDownloadError: "Failed to download model.",
 };
 
 export type Translations = {
@@ -494,4 +519,29 @@ export type Translations = {
 
   // Settings Extra
   settingsUpdateNetworkError: string;
+
+  // AI commit generation
+  aiGenerate: string;
+  aiGenerating: string;
+  aiGenerated: string;
+  aiNoApiKey: string;
+  aiCommitMessage: string;
+  aiEndpoint: string;
+  aiEndpointHint: string;
+  aiApiKeyLabel: string;
+  aiApiKeyHint: string;
+  aiModelLabel: string;
+  aiModelHint: string;
+  aiUseLocalModel: string;
+  aiUseLocalModelHint: string;
+  aiLocalModelLabel: string;
+  aiLocalModelHint: string;
+  aiNoLocalModel: string;
+  aiModelsDir: string;
+  aiModelsDirHint: string;
+  aiDownloadModel: string;
+  aiDownloadModelHint: string;
+  aiDownloading: string;
+  aiDownloadSuccess: string;
+  aiDownloadError: string;
 };
