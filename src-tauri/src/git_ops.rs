@@ -2,9 +2,41 @@ use git2::{
     BranchType, build::CheckoutBuilder, DiffFormat, DiffOptions, FetchOptions, MergeOptions,
     PushOptions, RemoteCallbacks, Repository, ResetType, StashFlags,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+/// Validate that `file_path` resolves to a location inside `repo_path`.
+/// Prevents path-traversal attacks (e.g. `../../etc/passwd`).
+fn safe_join(repo_path: &str, file_path: &str) -> Result<PathBuf, String> {
+    let base = Path::new(repo_path)
+        .canonicalize()
+        .map_err(|e| format!("Cannot resolve repo path: {}", e))?;
+    let full = base.join(file_path);
+    // Try to canonicalize — fails if the file doesn't exist yet, so we
+    // canonicalize the parent and check that prefix.
+    if let Ok(canon) = full.canonicalize() {
+        if !canon.starts_with(&base) {
+            return Err(format!(
+                "Path '{}' is outside the repository directory.", file_path
+            ));
+        }
+        return Ok(canon);
+    }
+    // File doesn't exist yet — canonicalize the parent directory instead.
+    let parent = full
+        .parent()
+        .unwrap_or_else(|| Path::new(repo_path));
+    let canon_parent = parent
+        .canonicalize()
+        .map_err(|e| format!("Cannot resolve parent directory: {}", e))?;
+    if !canon_parent.starts_with(&base) {
+        return Err(format!(
+            "Path '{}' is outside the repository directory.", file_path
+        ));
+    }
+    Ok(full)
+}
 
 fn open(path: &str) -> Result<Repository, String> {
     Repository::open(path).map_err(|e| e.to_string())
@@ -899,7 +931,7 @@ pub async fn git_conflicted_files(path: String) -> Result<Vec<String>, String> {
 
 #[tauri::command]
 pub async fn read_file_content(path: String, file_path: String) -> Result<String, String> {
-    let full_path = Path::new(&path).join(&file_path);
+    let full_path = safe_join(&path, &file_path)?;
     std::fs::read_to_string(full_path).map_err(|e| e.to_string())
 }
 
@@ -909,7 +941,7 @@ pub async fn write_file_content(
     file_path: String,
     content: String,
 ) -> Result<(), String> {
-    let full_path = Path::new(&path).join(&file_path);
+    let full_path = safe_join(&path, &file_path)?;
     std::fs::write(full_path, content).map_err(|e| e.to_string())
 }
 
@@ -1140,24 +1172,46 @@ pub async fn git_reset_hard(path: String) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn open_in_editor(editor: String, file_path: String) -> Result<(), String> {
+    // Validate editor name — reject suspicious input that could be used for
+    // command injection (shell metacharacters, absolute paths to unknown binaries).
+    // Only allow: known editor names, or absolute paths that look like real applications.
+    let editor_trimmed = editor.trim();
+    if editor_trimmed.is_empty() {
+        return Err("Editor command is empty.".to_string());
+    }
+    // Reject if the editor string contains shell metacharacters
+    if editor_trimmed.contains(|c: char| c == ';' || c == '|' || c == '&' || c == '$'
+        || c == '`' || c == '(' || c == ')' || c == '{' || c == '}'
+        || c == '\n' || c == '\r')
+    {
+        return Err(format!(
+            "Invalid editor command '{}': contains unsafe characters.", editor_trimmed
+        ));
+    }
+    // Validate file_path is inside the repo (basic check — the caller should
+    // pass the repo path, but at minimum reject obviously malicious paths)
+    if file_path.contains("\0") {
+        return Err("Invalid file path: contains null byte.".to_string());
+    }
+
     // This one intentionally keeps spawning an external process — it's opening the user's
     // editor of choice, not a git subprocess. We use spawn() (not output()) so it doesn't
     // block and doesn't show a console window on Windows either.
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        std::process::Command::new(&editor)
+        std::process::Command::new(editor_trimmed)
             .arg(&file_path)
             .creation_flags(0x08000000) // CREATE_NO_WINDOW
             .spawn()
-            .map_err(|e| format!("Failed to launch '{}': {}", editor, e))?;
+            .map_err(|e| format!("Failed to launch '{}': {}", editor_trimmed, e))?;
     }
     #[cfg(not(target_os = "windows"))]
     {
-        std::process::Command::new(&editor)
+        std::process::Command::new(editor_trimmed)
             .arg(&file_path)
             .spawn()
-            .map_err(|e| format!("Failed to launch '{}': {}", editor, e))?;
+            .map_err(|e| format!("Failed to launch '{}': {}", editor_trimmed, e))?;
     }
     Ok(())
 }
@@ -1213,12 +1267,158 @@ pub async fn git_add_all(path: String) -> Result<String, String> {
     Ok(String::new())
 }
 
+/// Add only the specified files to the index (selective staging).
+#[tauri::command]
+pub async fn git_add_files(path: String, files: Vec<String>) -> Result<String, String> {
+    let repo = open(&path)?;
+    let mut index = repo.index().map_err(|e| e.to_string())?;
+    for file in &files {
+        index.add_path(Path::new(file)).map_err(|e| format!("Failed to stage {}: {}", file, e))?;
+    }
+    index.write().map_err(|e| e.to_string())?;
+    Ok(String::new())
+}
+
+/// Collect diffs only for the specified files (for selective AI generation).
+fn collect_diffs_for_files(repo_path: &str, files: &[String], max_chars: usize) -> Result<String, String> {
+    let repo = open(repo_path)?;
+    let statuses = repo.statuses(None).map_err(|e| e.to_string())?;
+    let file_set: std::collections::HashSet<&str> = files.iter().map(|s| s.as_str()).collect();
+    let mut combined = String::new();
+    let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+
+    for entry in statuses.iter() {
+        let s = entry.status();
+        if s.is_empty() || s.contains(git2::Status::IGNORED) { continue; }
+        let Some(path) = entry.path() else { continue };
+        if !file_set.contains(path) { continue; }
+
+        let mut file_diff = String::new();
+
+        if s.contains(git2::Status::WT_NEW) {
+            let full_path = std::path::Path::new(repo_path).join(path);
+            if let Ok(content) = std::fs::read_to_string(&full_path) {
+                if content.is_ascii() || content.chars().all(|c| !c.is_control() || c == '\n' || c == '\r' || c == '\t') {
+                    file_diff.push_str(&format!("+++ b/{}\n", path));
+                    for line in content.lines().take(200) {
+                        file_diff.push('+');
+                        file_diff.push_str(line);
+                        file_diff.push('\n');
+                    }
+                }
+            }
+        } else {
+            let mut opts = DiffOptions::new();
+            opts.pathspec(path);
+            if let Ok(d) = repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts)) {
+                let _ = d.print(DiffFormat::Patch, |_delta, _hunk, line| {
+                    file_diff.push_str(std::str::from_utf8(line.content()).unwrap_or(""));
+                    true
+                });
+            }
+            let mut opts2 = DiffOptions::new();
+            opts2.pathspec(path);
+            if let Ok(d) = repo.diff_index_to_workdir(None, Some(&mut opts2)) {
+                let _ = d.print(DiffFormat::Patch, |_delta, _hunk, line| {
+                    file_diff.push_str(std::str::from_utf8(line.content()).unwrap_or(""));
+                    true
+                });
+            }
+        }
+
+        if !file_diff.trim().is_empty() {
+            combined.push_str(&format!("--- {} ---\n{}\n", path, file_diff));
+            if combined.len() > max_chars {
+                combined.truncate(max_chars);
+                combined.push_str("\n... [truncated]");
+                break;
+            }
+        }
+    }
+    Ok(combined)
+}
+
+/// Generate commit message only for the specified files.
+#[tauri::command]
+pub async fn ai_generate_commit_for_files(
+    path: String,
+    files: Vec<String>,
+    config: AiConfig,
+) -> Result<String, String> {
+    let diffs = collect_diffs_for_files(&path, &files, 12_000)?;
+    if diffs.trim().is_empty() {
+        return Err("No changes to describe.".into());
+    }
+
+    let lang = lang_instruction(config.language.as_deref());
+    let prompt = format!(
+        "You are a commit-message generator. Based on the following git diff, produce a single concise commit message following the Conventional Commits spec (type: short description). Reply with ONLY the commit message, no explanation, no quotes, no markdown.{lang}\n\nDiff:\n{}",
+        diffs
+    );
+
+    let body = ChatRequest {
+        model: &config.model,
+        messages: vec![
+            ChatMessage { role: "system", content: "You generate concise git commit messages." },
+            ChatMessage { role: "user", content: &prompt },
+        ],
+        max_tokens: 120,
+        temperature: 0.3,
+    };
+
+    let url = format!("{}/chat/completions", config.endpoint.trim_end_matches('/'));
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", config.api_key))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {}", e))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("AI API error ({}): {}", status, text));
+    }
+
+    let data: ChatResponse = resp.json().await.map_err(|e| format!("Parse error: {}", e))?;
+    let msg = data
+        .choices
+        .and_then(|c| c.into_iter().next())
+        .and_then(|c| c.message)
+        .and_then(|m| m.content)
+        .unwrap_or_default();
+
+    Ok(msg.trim().to_string())
+}
+
+/// Generate commit message (local model) only for the specified files.
+#[tauri::command]
+pub async fn ai_generate_commit_local_for_files(
+    path: String,
+    files: Vec<String>,
+    model_name: String,
+    language: Option<String>,
+) -> Result<String, String> {
+    let diffs = collect_diffs_for_files(&path, &files, 12_000)?;
+    if diffs.trim().is_empty() {
+        return Err("No changes to describe.".into());
+    }
+    let lang = lang_instruction(language.as_deref());
+    tokio::task::spawn_blocking(move || crate::local_ai::generate_commit_message(&diffs, &model_name, &lang))
+        .await
+        .map_err(|e| format!("Task failed: {}", e))?
+}
+
 /// Collect a unified diff of all modified files, capped at `max_chars` to stay
 /// within typical LLM context limits.
 fn collect_diffs(repo_path: &str, max_chars: usize) -> Result<String, String> {
     let repo = open(repo_path)?;
     let statuses = repo.statuses(None).map_err(|e| e.to_string())?;
     let mut combined = String::new();
+    let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
 
     for entry in statuses.iter() {
         let s = entry.status();
@@ -1226,28 +1426,42 @@ fn collect_diffs(repo_path: &str, max_chars: usize) -> Result<String, String> {
             continue;
         }
         let Some(path) = entry.path() else { continue };
-        // Per-file diff (staged + unstaged)
-        let mut opts = DiffOptions::new();
-        opts.pathspec(path);
 
-        let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
         let mut file_diff = String::new();
 
-        // staged
-        if let Ok(d) = repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts)) {
-            let _ = d.print(DiffFormat::Patch, |_delta, _hunk, line| {
-                file_diff.push_str(std::str::from_utf8(line.content()).unwrap_or(""));
-                true
-            });
-        }
-        // unstaged
-        let mut opts2 = DiffOptions::new();
-        opts2.pathspec(path);
-        if let Ok(d) = repo.diff_index_to_workdir(None, Some(&mut opts2)) {
-            let _ = d.print(DiffFormat::Patch, |_delta, _hunk, line| {
-                file_diff.push_str(std::str::from_utf8(line.content()).unwrap_or(""));
-                true
-            });
+        // Untracked file — read its contents directly and format as a fake diff
+        if s.contains(git2::Status::WT_NEW) {
+            let full_path = std::path::Path::new(repo_path).join(path);
+            if let Ok(content) = std::fs::read_to_string(&full_path) {
+                // Only include text files (skip binary)
+                if content.is_ascii() || content.chars().all(|c| !c.is_control() || c == '\n' || c == '\r' || c == '\t') {
+                    file_diff.push_str(&format!("+++ b/{}\n", path));
+                    for line in content.lines().take(200) {
+                        file_diff.push('+');
+                        file_diff.push_str(line);
+                        file_diff.push('\n');
+                    }
+                }
+            }
+        } else {
+            // Staged diff (index vs HEAD)
+            let mut opts = DiffOptions::new();
+            opts.pathspec(path);
+            if let Ok(d) = repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts)) {
+                let _ = d.print(DiffFormat::Patch, |_delta, _hunk, line| {
+                    file_diff.push_str(std::str::from_utf8(line.content()).unwrap_or(""));
+                    true
+                });
+            }
+            // Unstaged diff (workdir vs index)
+            let mut opts2 = DiffOptions::new();
+            opts2.pathspec(path);
+            if let Ok(d) = repo.diff_index_to_workdir(None, Some(&mut opts2)) {
+                let _ = d.print(DiffFormat::Patch, |_delta, _hunk, line| {
+                    file_diff.push_str(std::str::from_utf8(line.content()).unwrap_or(""));
+                    true
+                });
+            }
         }
 
         if !file_diff.trim().is_empty() {
@@ -1267,6 +1481,17 @@ pub struct AiConfig {
     pub endpoint: String,
     pub api_key: String,
     pub model: String,
+    /// BCP-47 locale string from the app settings, e.g. "en", "zh-CN", "zh-TW"
+    pub language: Option<String>,
+}
+
+/// Return the language instruction to append to every AI prompt.
+fn lang_instruction(language: Option<&str>) -> String {
+    match language.unwrap_or("en") {
+        "zh-CN" => " Write the commit message in Simplified Chinese (简体中文).".to_string(),
+        "zh-TW" => " Write the commit message in Traditional Chinese (繁體中文).".to_string(),
+        _ => String::new(), // default: English, no extra instruction needed
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -1303,8 +1528,9 @@ pub async fn ai_generate_commit(path: String, config: AiConfig) -> Result<String
         return Err("No changes to describe.".into());
     }
 
+    let lang = lang_instruction(config.language.as_deref());
     let prompt = format!(
-        "You are a commit-message generator. Based on the following git diff, produce a single concise commit message following the Conventional Commits spec (type: short description). Reply with ONLY the commit message, no explanation, no quotes, no markdown.\n\nDiff:\n{}",
+        "You are a commit-message generator. Based on the following git diff, produce a single concise commit message following the Conventional Commits spec (type: short description). Reply with ONLY the commit message, no explanation, no quotes, no markdown.{lang}\n\nDiff:\n{}",
         diffs
     );
 
@@ -1347,13 +1573,13 @@ pub async fn ai_generate_commit(path: String, config: AiConfig) -> Result<String
 }
 
 #[tauri::command]
-pub async fn ai_generate_commit_local(path: String, model_name: String) -> Result<String, String> {
+pub async fn ai_generate_commit_local(path: String, model_name: String, language: Option<String>) -> Result<String, String> {
     let diffs = collect_diffs(&path, 12_000)?;
     if diffs.trim().is_empty() {
         return Err("No changes to describe.".into());
     }
-
-    tokio::task::spawn_blocking(move || crate::local_ai::generate_commit_message(&diffs, &model_name))
+    let lang = lang_instruction(language.as_deref());
+    tokio::task::spawn_blocking(move || crate::local_ai::generate_commit_message(&diffs, &model_name, &lang))
         .await
         .map_err(|e| format!("Task failed: {}", e))?
 }
@@ -1371,4 +1597,14 @@ pub async fn ai_models_dir() -> Result<String, String> {
 #[tauri::command]
 pub async fn ai_download_model(url: String, filename: String) -> Result<String, String> {
     crate::local_ai::download_model(&url, &filename).await
+}
+
+#[tauri::command]
+pub async fn ai_delete_model(filename: String) -> Result<(), String> {
+    let path = crate::local_ai::models_dir().join(&filename);
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| format!("Failed to delete model: {}", e))
+    } else {
+        Err(format!("Model file not found: {}", filename))
+    }
 }

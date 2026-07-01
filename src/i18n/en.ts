@@ -97,6 +97,8 @@ export const en = {
 
   // ── Settings Modal ─────────────────────────────────────────────────────────
   settingsTitle: "Settings",
+  settingsGroupGeneral: "General",
+  settingsGroupAdvanced: "Advanced",
   settingsLanguage: "Language",
   settingsLanguageHint: "UI display language",
   settingsAppearance: "Appearance",
@@ -251,7 +253,7 @@ export const en = {
   aiGenerating: "Generating commit message…",
   aiGenerated: "AI commit message generated.",
   aiNoApiKey: "Please set your AI API key in Settings first.",
-  aiCommitMessage: "AI Commit Message",
+  aiCommitMessage: "AI Assistant",
   aiEndpoint: "API Endpoint",
   aiEndpointHint: "OpenAI-compatible base URL (e.g. https://api.openai.com/v1)",
   aiApiKeyLabel: "API Key",
@@ -266,10 +268,16 @@ export const en = {
   aiModelsDir: "Models Directory",
   aiModelsDirHint: "Directory containing GGUF model files",
   aiDownloadModel: "Download Model",
-  aiDownloadModelHint: "Download a lightweight GGUF model for commit message generation",
-  aiDownloading: "Downloading model…",
+  aiDownloadModelHint: "Download a GGUF model for commit message generation",
+  aiDownloading: "Downloading…",
   aiDownloadSuccess: "Model downloaded successfully.",
-  aiDownloadError: "Failed to download model.",
+  aiDownloadError: "Download failed",
+  aiInstalledModels: "Installed Models",
+  aiModel3BNote: "Recommended · Balanced",
+  aiModel7BNote: "Best quality",
+  aiModel1_5BNote: "Lightweight",
+  aiModelInstalled: "Installed",
+  aiModelDownloadBtn: "Download",
 };
 
 export type Translations = {
@@ -371,6 +379,8 @@ export type Translations = {
 
   // Settings Modal
   settingsTitle: string;
+  settingsGroupGeneral: string;
+  settingsGroupAdvanced: string;
   settingsLanguage: string;
   settingsLanguageHint: string;
   settingsAppearance: string;
@@ -544,4 +554,10 @@ export type Translations = {
   aiDownloading: string;
   aiDownloadSuccess: string;
   aiDownloadError: string;
+  aiInstalledModels: string;
+  aiModel3BNote: string;
+  aiModel7BNote: string;
+  aiModel1_5BNote: string;
+  aiModelInstalled: string;
+  aiModelDownloadBtn: string;
 };

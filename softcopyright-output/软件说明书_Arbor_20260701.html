@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>软件说明书_Arbor Git 客户端软件</title>
+<style>
+  @page { size: A4; margin: 20mm 18mm; }
+  body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 12pt; line-height: 1.8; color: #111; }
+  h1 { font-size: 20pt; text-align: center; margin-bottom: 4px; }
+  h2 { font-size: 14pt; border-left: 4px solid #333; padding-left: 8px; margin-top: 28px; }
+  h3 { font-size: 12.5pt; margin-top: 18px; }
+  .subtitle { text-align:center; color:#555; margin-bottom: 30px; }
+  .cover { text-align:center; margin-top: 220px; page-break-after: always; }
+  .cover .name { font-size: 26pt; font-weight:bold; margin-bottom: 12px; }
+  .cover .ver { font-size: 14pt; color: #444; }
+  .meta-table { margin: 40px auto; border-collapse: collapse; width: 70%; }
+  .meta-table td { border: 1px solid #999; padding: 8px 12px; font-size: 11pt; }
+  ul, ol { margin: 6px 0; padding-left: 24px; }
+  li { margin-bottom: 4px; }
+  table.func { border-collapse: collapse; width: 100%; margin: 10px 0; }
+  table.func th, table.func td { border: 1px solid #999; padding: 6px 10px; font-size: 10.5pt; text-align: left; }
+  table.func th { background: #f0f0f0; }
+  .footer-note { font-size: 9.5pt; color: #777; margin-top: 40px; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <div class="name">Arbor Git 客户端软件</div>
+  <div class="ver">V1.0</div>
+  <br/><br/>
+  <div style="font-size:16pt; margin-top: 60px;">软 件 说 明 书</div>
+  <table class="meta-table">
+    <tr><td>软件名称</td><td>Arbor Git 客户端软件</td></tr>
+    <tr><td>软件简称</td><td>Arbor</td></tr>
+    <tr><td>版本号</td><td>V1.0</td></tr>
+    <tr><td>开发完成日期</td><td>2026年07月</td></tr>
+    <tr><td>开发单位/个人</td><td>quanminjun37@gmail.com</td></tr>
+  </table>
+</div>
+
+<h1>软件说明书</h1>
+<div class="subtitle">Arbor Git 客户端软件 V1.0</div>
+
+<h2>一、概述</h2>
+<p>
+Arbor Git 客户端软件（以下简称"本软件"）是一款基于 Tauri 2 框架与 React 19 前端技术构建的跨平台原生 Git 图形化客户端。本软件旨在为软件开发人员、项目管理人员及版本控制使用者提供一个界面美观、操作直观、性能高效的 Git 版本控制可视化工具，帮助用户摆脱传统命令行操作 Git 的学习门槛，通过图形化界面完成分支管理、提交历史查看、差异对比、冲突解决、远程仓库协作等常见版本控制任务。
+</p>
+<p>
+本软件采用 Rust 语言编写后端核心逻辑，通过 Tauri 框架实现与操作系统底层的高效交互，并调用 libgit2（git2 库）实现对 Git 仓库的直接操作，避免了对外部 Git 命令行程序的依赖，从而保证了操作的稳定性与执行效率。前端界面采用 React 19 结合 TypeScript 开发，并使用 Tailwind CSS 与 HeroUI 组件库构建具有玻璃拟态（Glassmorphism）视觉风格的现代化用户界面，支持亮色、暗色及跟随系统三种主题模式，同时内置中文简体、中文繁体与英文三种语言支持，满足不同地区用户的使用需求。
+</p>
+<p>
+本软件可运行于 macOS、Linux、Windows 三大主流桌面操作系统，安装包体积小、启动速度快、内存占用低，相较于基于 Electron 架构的同类软件具有明显的性能优势。
+</p>
+
+<h2>二、开发目的</h2>
+<p>
+随着软件工程团队协作规模的不断扩大，Git 已成为事实上的版本控制标准工具。然而，Git 原生命令行工具学习曲线陡峭，对于分支管理、合并冲突处理等较为复杂的操作，初学者及非专业开发人员往往难以直接掌握，操作失误还可能造成代码丢失等严重后果。市面上已有的图形化 Git 客户端多数基于 Electron 等 Web 容器技术构建，存在启动缓慢、内存占用高、界面风格与操作系统割裂等问题。
+</p>
+<p>
+本软件的开发目的在于：其一，基于 Tauri 原生框架构建轻量、高效、低资源占用的桌面应用，充分发挥 Rust 语言在系统级编程中的性能与安全优势；其二，通过可视化提交图谱、拖拽式冲突解决器等交互设计，降低用户操作 Git 的认知负担；其三，集成 GitHub、GitLab、Gitee 等主流代码托管平台的 OAuth 授权登录与个人访问令牌管理能力，实现仓库克隆、Pull Request / Merge Request 查看等一体化协作功能，提升开发团队的整体协作效率。
+</p>
+
+<h2>三、运行环境</h2>
+<h3>3.1 硬件环境</h3>
+<ul>
+  <li>处理器：Intel x86_64 或 ARM64（Apple Silicon）架构，主频 1.6GHz 及以上</li>
+  <li>内存：4GB 及以上</li>
+  <li>硬盘可用空间：200MB 及以上</li>
+</ul>
+<h3>3.2 软件环境</h3>
+<ul>
+  <li>操作系统：macOS 11 及以上、Windows 10/11、主流 Linux 发行版（Ubuntu、Fedora、openSUSE 等）</li>
+  <li>本地已安装 Git（用于部分辅助操作场景）</li>
+  <li>网络环境：需联网以使用远程仓库克隆、OAuth 登录及在线更新检测等功能</li>
+</ul>
+<h3>3.3 开发环境</h3>
+<ul>
+  <li>后端语言：Rust（edition 2021）</li>
+  <li>桌面应用框架：Tauri 2.x</li>
+  <li>前端语言与框架：TypeScript、React 19</li>
+  <li>构建工具：Vite 7</li>
+  <li>样式方案：Tailwind CSS 4、HeroUI 组件库</li>
+  <li>核心第三方库：git2（libgit2 绑定）、reqwest、tokio、serde、notify（文件系统监听）、llama-cpp-2（本地 AI 推理）</li>
+</ul>
+
+<h2>四、软件的主要功能</h2>
+<table class="func">
+  <tr><th>功能模块</th><th>功能说明</th></tr>
+  <tr><td>可视化提交图谱</td><td>以图形化泳道方式展示分支与提交历史，直观呈现分支的分叉、合并关系</td></tr>
+  <tr><td>分支管理</td><td>支持分支的创建、切换（checkout）、合并（merge）、变基（rebase）与删除等操作</td></tr>
+  <tr><td>差异查看器</td><td>展示已暂存与未暂存文件的逐行差异内容，支持文件级与行级的暂存/取消暂存操作</td></tr>
+  <tr><td>冲突解决器</td><td>提供可视化模式与原始文本编辑模式两种冲突解决方式，辅助用户快速定位并解决合并冲突</td></tr>
+  <tr><td>远程仓库协作</td><td>支持 GitHub、GitLab 的 OAuth 一键登录授权，以及 GitHub、GitLab、Gitee 个人访问令牌（PAT）管理</td></tr>
+  <tr><td>仓库克隆</td><td>支持在线搜索远程仓库并执行克隆操作</td></tr>
+  <tr><td>PR / MR 面板</td><td>实时拉取并展示当前仓库关联的 Pull Request / Merge Request 列表</td></tr>
+  <tr><td>本地变更管理</td><td>展示工作区本地未提交变更，支持提交、撤销、贮藏（stash）等操作</td></tr>
+  <tr><td>文件系统监听</td><td>基于操作系统原生文件监听机制，实时感知仓库文件变化并自动刷新界面状态</td></tr>
+  <tr><td>多语言界面</td><td>内置简体中文、繁体中文、英文三种界面语言，可随时切换</td></tr>
+  <tr><td>主题与外观</td><td>支持亮色、暗色及跟随系统三种主题模式，界面采用玻璃拟态视觉风格</td></tr>
+  <tr><td>本地 AI 辅助</td><td>集成本地大语言模型推理能力，为提交信息生成等场景提供智能辅助</td></tr>
+  <tr><td>系统集成</td><td>支持 macOS 原生菜单栏集成、系统通知提醒及应用内自动更新检测</td></tr>
+</table>
+
+<h2>五、软件的技术特点与创新点</h2>
+<h3>5.1 原生高性能架构</h3>
+<p>
+本软件基于 Tauri 2 框架构建，前端界面渲染依托操作系统原生 WebView 组件，后端核心逻辑完全由 Rust 编写并编译为原生二进制代码，摒弃了 Electron 等方案内置完整 Chromium 浏览器内核的做法，从而大幅降低安装包体积与运行时内存占用，提升应用启动速度与整体运行效率。
+</p>
+<h3>5.2 直接调用 libgit2 的 Git 操作层</h3>
+<p>
+不同于部分同类工具通过子进程调用系统 Git 命令行程序解析文本输出的方式，本软件通过 git2 库直接绑定 libgit2 C 语言库，以结构化 API 形式完成仓库状态读取、提交、分支、合并、变基等操作，减少了因命令行输出格式差异导致的解析错误风险，同时具备更高的执行效率与更精细的错误处理能力。
+</p>
+<h3>5.3 可视化冲突解决机制</h3>
+<p>
+针对合并/变基过程中常见的冲突场景，本软件设计了独立的冲突解析模块，能够自动解析冲突标记（如 &lt;&lt;&lt;&lt;&lt;&lt;&lt; / ======= / &gt;&gt;&gt;&gt;&gt;&gt;&gt;），并提供并排对比与原始编辑两种交互模式，帮助用户以更低的认知成本完成冲突处理。
+</p>
+<h3>5.4 统一的多平台身份认证体系</h3>
+<p>
+本软件设计并实现了统一的 OAuth 授权与个人访问令牌管理体系，抽象了 GitHub、GitLab、Gitee 等不同代码托管平台的鉴权协议差异，为用户提供一致的登录体验，并将凭证信息进行本地安全存储。
+</p>
+<h3>5.5 本地 AI 能力集成</h3>
+<p>
+本软件集成了基于 llama.cpp 的本地大语言模型推理引擎，无需依赖云端服务即可在本地完成智能文本生成任务，兼顾了功能智能化与用户数据隐私保护的双重需求。
+</p>
+<h3>5.6 实时文件监听与状态同步</h3>
+<p>
+本软件基于操作系统原生文件系统事件监听接口，实现对仓库工作区变化的实时感知，并结合防抖（debounce）机制避免频繁刷新造成的性能损耗，保证界面状态与磁盘实际状态的一致性。
+</p>
+
+<h2>六、软件的运行原理与工作流程</h2>
+<p>
+本软件启动后，前端 React 应用通过 Tauri 提供的 IPC（进程间通信）机制向 Rust 后端发起指令调用（invoke），后端接收到指令后，通过 git_ops 模块调用 libgit2 完成对应的仓库操作，并将执行结果以 JSON 序列化形式返回前端进行渲染。整体工作流程如下：
+</p>
+<ol>
+  <li>用户通过界面选择或打开本地 Git 仓库，前端调用后端接口读取仓库状态（当前分支、提交历史、工作区变更等）；</li>
+  <li>后端 git_ops 模块基于 libgit2 遍历提交对象与引用信息，构建提交图谱数据结构并返回前端进行可视化渲染；</li>
+  <li>用户在界面上执行暂存、提交、分支切换、合并等操作时，前端将操作参数通过 IPC 传递至后端，由后端调用相应的 libgit2 接口完成实际的仓库写操作；</li>
+  <li>当涉及远程仓库交互（如克隆、拉取 PR/MR 列表）时，oauth 模块负责处理身份鉴权流程，通过 reqwest 异步 HTTP 客户端与 GitHub/GitLab/Gitee 开放 API 通信；</li>
+  <li>notify 文件监听模块在后台持续监控仓库目录的文件系统事件，一旦检测到外部变更（如通过命令行操作仓库），即通知前端刷新界面状态；</li>
+  <li>本地 AI 模块在用户触发智能生成场景时，加载本地量化语言模型进行推理，并将生成结果返回前端展示。</li>
+</ol>
+
+<h2>七、软件的主要技术指标</h2>
+<ul>
+  <li>安装包体积：显著小于同类 Electron 架构 Git 客户端</li>
+  <li>冷启动时间：秒级启动</li>
+  <li>支持平台：macOS（Intel / Apple Silicon）、Windows（x64 / arm64）、主流 Linux 发行版</li>
+  <li>支持的代码托管平台：GitHub、GitLab、Gitee</li>
+  <li>界面语言：简体中文、繁体中文、英文</li>
+</ul>
+
+<h2>八、开发过程与团队分工</h2>
+<p>
+本软件由开发者独立设计、开发与测试完成，开发过程涵盖需求分析、架构设计、前后端功能实现、多平台适配、界面视觉设计以及版本迭代优化等环节。软件采用模块化架构进行组织：后端划分为 Git 操作模块（git_ops）、身份鉴权模块（oauth）、本地 AI 模块（local_ai）与应用生命周期管理模块（lib）；前端划分为主应用容器（App）、提交图谱组件、设置与偏好管理组件、克隆与远程协作组件、冲突处理组件以及国际化资源模块，各模块职责清晰、耦合度低，便于后续功能扩展与维护。
+</p>
+
+<h2>九、软件的应用价值</h2>
+<p>
+本软件面向广大软件开发人员、开源项目维护者及技术团队，能够有效降低 Git 版本控制工具的使用门槛，提升日常开发协作效率，减少因误操作导致的代码丢失风险。凭借原生架构带来的高性能与低资源占用特性，本软件相较于同类产品在用户体验与系统资源消耗方面具有显著优势，具备良好的推广应用价值与市场竞争力。
+</p>
+
+<div class="footer-note">
+本说明书如实描述本软件的功能、技术特点及运行原理，用于软件著作权登记申请之用。
+</div>
+
+</body>
+</html>

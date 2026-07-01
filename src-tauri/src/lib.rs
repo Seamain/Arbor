@@ -3,8 +3,6 @@ mod local_ai;
 mod oauth;
 
 use notify_debouncer_mini::{new_debouncer, notify::RecursiveMode, DebounceEventResult};
-#[cfg(target_os = "macos")]
-use tauri_plugin_notification::NotificationExt;
 use std::{collections::HashMap, sync::Mutex, time::Duration};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
@@ -192,34 +190,32 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            let window = app.get_webview_window("main").unwrap();
+            let window = app
+                .get_webview_window("main")
+                .ok_or("main window not found")?;
 
             // ── macOS: vibrancy / frosted glass ───────────────────────────
+            // Must be applied synchronously BEFORE the window paints, otherwise
+            // the transparent window (transparent: true in tauri.conf.json)
+            // shows the desktop through the 64%-opacity sidebar CSS.
             #[cfg(target_os = "macos")]
             {
                 use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
-                apply_vibrancy(&window, NSVisualEffectMaterial::HudWindow, None, None)
-                    .expect("apply_vibrancy failed");
+                let _ = apply_vibrancy(&window, NSVisualEffectMaterial::HudWindow, None, None);
             }
 
             // ── Windows: acrylic blur (requires Windows 10 1803+) ─────────
+            // Same rationale — must be set before first paint.
             #[cfg(target_os = "windows")]
             {
                 use window_vibrancy::apply_acrylic;
-                // colour = RGBA; a light semi-transparent tint
                 let _ = apply_acrylic(&window, Some((245, 248, 252, 200)));
             }
 
-            // ── Linux: no native blur — force solid background via JS ────────
+            // ── Linux: apply solid background immediately (must happen before
+            // first paint to avoid a white flash). This is cheap, keep it sync.
             #[cfg(target_os = "linux")]
             {
-                // Most Linux compositors don't support backdrop-filter or
-                // transparent Tauri windows. Tell the frontend to switch from
-                // its glass CSS to the solid-colour fallback palette.
-                // (WebviewWindow has no set_transparent API in Tauri v2;
-                // transparency is controlled only via tauri.conf.json. The
-                // index.html inline script handles the pre-paint case; this
-                // eval covers any edge cases where the attribute was not set.)
                 let _ = window.eval(
                     "document.documentElement.setAttribute('data-platform','linux'); \
                      document.documentElement.style.background='#f1f4f8'; \
@@ -227,22 +223,38 @@ pub fn run() {
                 );
             }
 
-            // ── macOS: request notification permission at startup ─────────
-            // This triggers the system permission dialog on first launch,
-            // before the user has interacted with anything.
-            #[cfg(target_os = "macos")]
-            {
-                let _ = app.notification().request_permission();
-            }
+            // ── Spawn a background task for the remaining startup work so the
+            // window can paint its first frame without waiting.
+            // Building and registering the native menu (15+ items, keyboard
+            // accelerators) takes 20-80 ms on some platforms. Doing this off
+            // the setup thread lets the webview render sooner.
+            let app_handle = app.handle().clone();
 
-            // ── Native menu bar (all platforms) ───────────────────────────
-            let menu = build_menu(app.handle())?;
-            app.set_menu(menu)?;
+            tauri::async_runtime::spawn(async move {
+                // ── macOS: request notification permission ───────────────
+                #[cfg(target_os = "macos")]
+                {
+                    use tauri_plugin_notification::NotificationExt;
+                    let _ = app_handle.notification().request_permission();
+                }
 
-            // Forward menu-item clicks to the frontend as "menu-action" events
-            let handle = app.handle().clone();
-            app.on_menu_event(move |_app, event| {
-                let _ = handle.emit("menu-action", event.id().0.clone());
+                // ── Native menu bar (all platforms) ──────────────────────
+                match build_menu(&app_handle) {
+                    Ok(menu) => {
+                        if let Err(e) = app_handle.set_menu(menu) {
+                            eprintln!("Failed to set menu: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to build menu: {}", e);
+                    }
+                }
+
+                // Forward menu-item clicks to the frontend as "menu-action" events
+                let handle = app_handle.clone();
+                app_handle.on_menu_event(move |_app, event| {
+                    let _ = handle.emit("menu-action", event.id().0.clone());
+                });
             });
 
             Ok(())
@@ -277,11 +289,15 @@ pub fn run() {
             git_ops::write_file_content,
             git_ops::git_add,
             git_ops::git_add_all,
+            git_ops::git_add_files,
             git_ops::ai_generate_commit,
             git_ops::ai_generate_commit_local,
+            git_ops::ai_generate_commit_for_files,
+            git_ops::ai_generate_commit_local_for_files,
             git_ops::ai_list_local_models,
             git_ops::ai_models_dir,
             git_ops::ai_download_model,
+            git_ops::ai_delete_model,
             git_ops::git_commit,
             git_ops::git_stash,
             git_ops::git_auto_stash,

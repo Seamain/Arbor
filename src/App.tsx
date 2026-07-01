@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, lazy, Suspense } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -11,19 +11,32 @@ import {
   ArchiveRestore, Eye, GitMerge, Settings, UserCircle2, Download, Sparkles,
 } from "lucide-react";
 import "./App.css";
-import { GitGraphViewer } from "./components/GitGraphViewer";
-import { ConflictModal } from "./components/ConflictModal";
-import { LocalChangesModal } from "./components/LocalChangesModal";
+
+// ── Eagerly loaded: needed on first paint ────────────────────────────────────
 import { ContextMenu } from "./components/ContextMenu";
-import { SettingsModal } from "./components/SettingsModal";
-import { AboutModal } from "./components/AboutModal";
 import { AppSettings, loadSettings, saveSettings } from "./settings";
 import { ensureNotificationPermission, notify } from "./notify";
 import { GitProvider, loadProviders, saveProviders, matchRemoteToProvider, createPrUrl } from "./providers";
-import { ProvidersModal } from "./components/ProvidersModal";
-import { CloneModal } from "./components/CloneModal";
-import { PullRequestsPanel } from "./components/PullRequestsPanel";
 import { I18nContext, getTranslations, useT } from "./i18n";
+
+// ── Lazily loaded: deferred to reduce initial bundle parse/eval time ─────────
+const GitGraphViewer      = lazy(() => import("./components/GitGraphViewer").then(m => ({ default: m.GitGraphViewer })));
+const ConflictModal       = lazy(() => import("./components/ConflictModal").then(m => ({ default: m.ConflictModal })));
+const LocalChangesModal   = lazy(() => import("./components/LocalChangesModal").then(m => ({ default: m.LocalChangesModal })));
+const SettingsModal       = lazy(() => import("./components/SettingsModal").then(m => ({ default: m.SettingsModal })));
+const AboutModal          = lazy(() => import("./components/AboutModal").then(m => ({ default: m.AboutModal })));
+const ProvidersModal      = lazy(() => import("./components/ProvidersModal").then(m => ({ default: m.ProvidersModal })));
+const CloneModal          = lazy(() => import("./components/CloneModal").then(m => ({ default: m.CloneModal })));
+const PullRequestsPanel   = lazy(() => import("./components/PullRequestsPanel").then(m => ({ default: m.PullRequestsPanel })));
+
+// ── Suspense fallback: lightweight placeholder shown while a chunk loads ─────
+function ChunkFallback() {
+  return (
+    <div className="flex items-center justify-center h-full w-full">
+      <Spinner size="sm" />
+    </div>
+  );
+}
 
 // ─── persistence ────────────────────────────────────────────────────────────
 const HISTORY_KEY = "arbor-repo-history";
@@ -66,6 +79,7 @@ interface RepoTab {
   hasConflicts: boolean; // whether there are unmerged files
   branches: string[];
   modifiedFiles: string[];
+  stagedFiles: Set<string>;  // which files are checked for commit
   historyLogs: string[];
   logs: LogEntry[];
   loading: Record<string, boolean>;
@@ -82,7 +96,7 @@ function makeTab(path: string): RepoTab {
     path,
     label: path.split("/").filter(Boolean).pop() ?? path,
     status: "", headOid: "", headBranch: "", behindCount: 0, hasConflicts: false,
-    branches: [], modifiedFiles: [], historyLogs: [],
+    branches: [], modifiedFiles: [], stagedFiles: new Set<string>(), historyLogs: [],
     logs: [], loading: {}, selectedFile: null, fileDiff: "",
     selectedTab: "history", consoleOpen: false, remoteUrl: null, commitMessage: "",
   };
@@ -332,6 +346,22 @@ export default function App() {
   function patchTab(path: string, patch: Partial<RepoTab>) {
     setTabs(prev => prev.map(t => t.path === path ? { ...t, ...patch } : t));
   }
+
+  /** When modifiedFiles is updated, sync stagedFiles:
+   *  - new files are added (checked by default)
+   *  - removed files are dropped from the set
+   *  - existing checked state is preserved */
+  function patchTabWithFiles(path: string, newFiles: string[], rest: Partial<RepoTab>) {
+    setTabs(prev => prev.map(t => {
+      if (t.path !== path) return t;
+      const next = new Set<string>(newFiles.filter(f => t.stagedFiles.has(f)));
+      // New files default to checked
+      for (const f of newFiles) {
+        if (!t.modifiedFiles.includes(f)) next.add(f);
+      }
+      return { ...t, ...rest, modifiedFiles: newFiles, stagedFiles: next };
+    }));
+  }
   function patchTabLoading(path: string, key: string, value: boolean) {
     setTabs(prev => prev.map(t =>
       t.path === path ? { ...t, loading: { ...t.loading, [key]: value } } : t
@@ -394,7 +424,7 @@ export default function App() {
         : parseHeadFromStatus(status);
       const behindCount = parseBehindCount(status);
       const hasConflicts = parseHasConflicts(status);
-      patchTab(path, { status, headOid, headBranch, behindCount, hasConflicts, modifiedFiles, branches, historyLogs });
+      patchTabWithFiles(path, modifiedFiles, { status, headOid, headBranch, behindCount, hasConflicts, branches, historyLogs });
     } catch { /* ignore transient fs errors */ }
   }, []);
 
@@ -501,7 +531,7 @@ export default function App() {
         : parseHeadFromStatus(status);
       const behindCount = parseBehindCount(status);
       const hasConflicts = parseHasConflicts(status);
-      patchTab(path, { status, headOid, headBranch, behindCount, hasConflicts, modifiedFiles, branches, historyLogs });
+      patchTabWithFiles(path, modifiedFiles, { status, headOid, headBranch, behindCount, hasConflicts, branches, historyLogs });
       addLog(path, "success", "Repository loaded successfully.");
     } catch (e) {
       addLog(path, "error", `Error: ${e}`);
@@ -674,10 +704,17 @@ export default function App() {
     const message = currentTab.commitMessage.trim();
     if (!message) return;
 
+    const filesToCommit = [...currentTab.stagedFiles];
+    if (filesToCommit.length === 0) {
+      addLog(path, "error", "No files selected for commit.");
+      patchTab(path, { consoleOpen: true });
+      return;
+    }
+
     patchTabLoading(path, "Commit", true);
     addLog(path, "command", tr.logRunningCommand("Commit"));
     try {
-      await invoke<string>("git_add_all", { path });
+      await invoke<string>("git_add_files", { path, files: filesToCommit });
       await invoke<string>("git_commit", { path, message });
       addLog(path, "success", tr.logSuccessCommand("Commit"));
       patchTab(path, { commitMessage: "", selectedFile: null, fileDiff: "", selectedTab: "history" });
@@ -691,8 +728,14 @@ export default function App() {
 
   async function handleAiGenerate(path: string) {
     const cfg = settingsRef.current;
+    const currentTab = tabsRef.current.find(t => t.path === path);
+    const filesToUse = currentTab ? [...currentTab.stagedFiles] : [];
+    const language = cfg.language ?? "en";
+
     patchTabLoading(path, "AiGenerate", true);
     addLog(path, "command", tr.aiGenerating);
+    // Open console so errors are immediately visible
+    patchTab(path, { consoleOpen: true });
     try {
       let msg: string;
       if (cfg.aiUseLocalModel) {
@@ -700,19 +743,33 @@ export default function App() {
           addLog(path, "error", tr.aiNoLocalModel);
           return;
         }
-        msg = await invoke<string>("ai_generate_commit_local", {
-          path,
-          modelName: cfg.aiLocalModel,
-        });
+        // Verify the model file actually exists before calling into Rust
+        const installedModels = await invoke<string[]>("ai_list_local_models").catch(() => [] as string[]);
+        if (!installedModels.includes(cfg.aiLocalModel)) {
+          addLog(path, "error", `Model file not found: ${cfg.aiLocalModel}. Please download it in Settings → AI.`);
+          // Auto-correct the stored setting
+          const fallback = installedModels[0] ?? "";
+          setSettings(prev => { const next = { ...prev, aiLocalModel: fallback }; saveSettings(next); return next; });
+          return;
+        }
+        msg = await invoke<string>(
+          filesToUse.length > 0 ? "ai_generate_commit_local_for_files" : "ai_generate_commit_local",
+          filesToUse.length > 0
+            ? { path, files: filesToUse, modelName: cfg.aiLocalModel, language }
+            : { path, modelName: cfg.aiLocalModel, language }
+        );
       } else {
         if (!cfg.aiApiKey) {
           addLog(path, "error", tr.aiNoApiKey);
           return;
         }
-        msg = await invoke<string>("ai_generate_commit", {
-          path,
-          config: { endpoint: cfg.aiEndpoint, apiKey: cfg.aiApiKey, model: cfg.aiModel },
-        });
+        const config = { endpoint: cfg.aiEndpoint, apiKey: cfg.aiApiKey, model: cfg.aiModel, language };
+        msg = await invoke<string>(
+          filesToUse.length > 0 ? "ai_generate_commit_for_files" : "ai_generate_commit",
+          filesToUse.length > 0
+            ? { path, files: filesToUse, config }
+            : { path, config }
+        );
       }
       if (msg) patchTab(path, { commitMessage: msg });
       addLog(path, "success", tr.aiGenerated);
@@ -1140,12 +1197,14 @@ export default function App() {
 
                 {/* PR / MR panel — only shown when a provider is matched */}
                 {activeProviderMatch && (
-                  <PullRequestsPanel
-                    repoPath={tab.path}
-                    remoteUrl={tab.remoteUrl}
-                    provider={activeProviderMatch.provider}
-                    repoFullName={activeProviderMatch.repoFullName}
-                  />
+                  <Suspense fallback={<ChunkFallback />}>
+                    <PullRequestsPanel
+                      repoPath={tab.path}
+                      remoteUrl={tab.remoteUrl}
+                      provider={activeProviderMatch.provider}
+                      repoFullName={activeProviderMatch.repoFullName}
+                    />
+                  </Suspense>
                 )}
               </div>
 
@@ -1153,8 +1212,28 @@ export default function App() {
               <div className="w-64 shrink-0 flex flex-col liquid-glass-panel z-10">
                 <div className="panel-header px-3 py-2.5 flex items-center justify-between">
                   <div className="flex items-center gap-2">
+                    {/* Select-all checkbox */}
+                    {tab.modifiedFiles.length > 0 && (() => {
+                      const allChecked = tab.modifiedFiles.every(f => tab.stagedFiles.has(f));
+                      const someChecked = tab.modifiedFiles.some(f => tab.stagedFiles.has(f));
+                      return (
+                        <input
+                          type="checkbox"
+                          className="file-checkbox"
+                          checked={allChecked}
+                          ref={el => { if (el) el.indeterminate = someChecked && !allChecked; }}
+                          onChange={e => {
+                            const next = new Set<string>(e.target.checked ? tab.modifiedFiles : []);
+                            patchTab(tab.path, { stagedFiles: next });
+                          }}
+                          title="Select all / deselect all"
+                        />
+                      );
+                    })()}
                     <span className="panel-title">{tr.localChanges}</span>
-                    <span className="count-pill">{tab.modifiedFiles.length}</span>
+                    <span className="count-pill">
+                      {tab.stagedFiles.size}/{tab.modifiedFiles.length}
+                    </span>
                   </div>
                   {tab.modifiedFiles.length > 0 && (
                     <button
@@ -1178,12 +1257,24 @@ export default function App() {
                         className={`change-row text-sm w-full text-left rounded-md mb-1.5 ${tab.selectedFile === file ? "change-row-active" : "text-default-600"}`}
                         onContextMenu={e => openFileCtxMenu(e, tab.path, file)}
                       >
+                        <input
+                          type="checkbox"
+                          className="file-checkbox"
+                          checked={tab.stagedFiles.has(file)}
+                          onChange={e => {
+                            const next = new Set<string>(tab.stagedFiles);
+                            if (e.target.checked) next.add(file); else next.delete(file);
+                            patchTab(tab.path, { stagedFiles: next });
+                          }}
+                          onClick={ev => ev.stopPropagation()}
+                          title={`${tab.stagedFiles.has(file) ? "Uncheck" : "Check"} ${file}`}
+                        />
                         <button
                           className="change-row-select"
                           onClick={() => selectFile(tab.path, file)}
                           title={file}
                         >
-                          <span className="change-row-label truncate">{file}</span>
+                          <span className={`change-row-label truncate ${!tab.stagedFiles.has(file) ? "opacity-40" : ""}`}>{file}</span>
                         </button>
                         <button
                           className="change-discard-button"
@@ -1216,7 +1307,7 @@ export default function App() {
                     <button
                       className="shrink-0 px-2 py-1.5 rounded-md text-sm transition-colors flex items-center justify-center border border-default-200 text-default-500 hover:text-primary hover:border-primary/40 disabled:opacity-50 disabled:cursor-not-allowed"
                       onClick={() => handleAiGenerate(tab.path)}
-                      disabled={!!tab.loading["AiGenerate"] || tab.modifiedFiles.length === 0}
+                      disabled={!!tab.loading["AiGenerate"] || tab.stagedFiles.size === 0}
                       title={tr.aiGenerate}
                     >
                       {tab.loading["AiGenerate"] ? <Spinner size="sm" color="current" /> : <Sparkles size={14} />}
@@ -1224,7 +1315,7 @@ export default function App() {
                     <button
                       className="flex-1 px-3 py-1.5 rounded-md text-sm font-semibold transition-colors flex items-center justify-center gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
                       onClick={() => handleCommit(tab.path)}
-                      disabled={!tab.commitMessage.trim() || !!tab.loading["Commit"]}
+                      disabled={!tab.commitMessage.trim() || !!tab.loading["Commit"] || tab.stagedFiles.size === 0}
                     >
                       {tab.loading["Commit"] ? <Spinner size="sm" color="current" /> : <GitCommitHorizontal size={14} />}
                       <span>{tr.commit}</span>
@@ -1274,7 +1365,9 @@ export default function App() {
 
                 {tab.selectedTab === "history" && (
                   <div className="flex-1 overflow-hidden" onContextMenu={e => openHistoryCtxMenu(e, tab.path)}>
-                    <GitGraphViewer logs={tab.historyLogs} headOid={tab.headOid} headBranch={tab.headBranch} />
+                    <Suspense fallback={<ChunkFallback />}>
+                      <GitGraphViewer logs={tab.historyLogs} headOid={tab.headOid} headBranch={tab.headBranch} />
+                    </Suspense>
                   </div>
                 )}
                 {tab.selectedTab === "diff" && (
@@ -1353,30 +1446,34 @@ export default function App() {
 
       {/* Conflict resolution modal */}
       {activeTab && (
-        <ConflictModal
-          isOpen={isConflictModalOpen}
-          onClose={() => setIsConflictModalOpen(false)}
-          repoPath={activeTab.path}
-          onResolved={() => handleConflictResolved(activeTab.path)}
-        />
+        <Suspense fallback={null}>
+          <ConflictModal
+            isOpen={isConflictModalOpen}
+            onClose={() => setIsConflictModalOpen(false)}
+            repoPath={activeTab.path}
+            onResolved={() => handleConflictResolved(activeTab.path)}
+          />
+        </Suspense>
       )}
 
       {/* Local changes overwritten modal */}
       {activeTab && (
-        <LocalChangesModal
-          isOpen={localChangesState.isOpen}
-          onClose={() => setLocalChangesState(prev => ({ ...prev, isOpen: false }))}
-          repoPath={activeTab.path}
-          files={localChangesState.files}
-          command={localChangesState.command}
-          onResolved={() => fullRefresh(activeTab.path)}
-          onAutoStashCreated={(stashOid) => rememberPendingAutoStash(activeTab.path, stashOid)}
-          onAutoStashReleased={() => {
-            clearPendingAutoStash(activeTab.path);
-            addLog(activeTab.path, "success", "Auto stash applied and released.");
-          }}
-          onNeedsConflictResolution={() => setIsConflictModalOpen(true)}
-        />
+        <Suspense fallback={null}>
+          <LocalChangesModal
+            isOpen={localChangesState.isOpen}
+            onClose={() => setLocalChangesState(prev => ({ ...prev, isOpen: false }))}
+            repoPath={activeTab.path}
+            files={localChangesState.files}
+            command={localChangesState.command}
+            onResolved={() => fullRefresh(activeTab.path)}
+            onAutoStashCreated={(stashOid) => rememberPendingAutoStash(activeTab.path, stashOid)}
+            onAutoStashReleased={() => {
+              clearPendingAutoStash(activeTab.path);
+              addLog(activeTab.path, "success", "Auto stash applied and released.");
+            }}
+            onNeedsConflictResolution={() => setIsConflictModalOpen(true)}
+          />
+        </Suspense>
       )}
 
       {/* Context menu */}
@@ -1390,34 +1487,42 @@ export default function App() {
       )}
 
       {/* Settings modal */}
-      <SettingsModal
-        isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
-        settings={settings}
-        onSave={handleSaveSettings}
-      />
+      <Suspense fallback={null}>
+        <SettingsModal
+          isOpen={isSettingsOpen}
+          onClose={() => setIsSettingsOpen(false)}
+          settings={settings}
+          onSave={handleSaveSettings}
+        />
+      </Suspense>
 
       {/* Git Accounts modal */}
-      <ProvidersModal
-        isOpen={isProvidersOpen}
-        onClose={() => setIsProvidersOpen(false)}
-        providers={providers}
-        onProvidersChange={next => { setProviders(next); saveProviders(next); }}
-      />
+      <Suspense fallback={null}>
+        <ProvidersModal
+          isOpen={isProvidersOpen}
+          onClose={() => setIsProvidersOpen(false)}
+          providers={providers}
+          onProvidersChange={next => { setProviders(next); saveProviders(next); }}
+        />
+      </Suspense>
 
       {/* Clone modal */}
-      <CloneModal
-        isOpen={isCloneOpen}
-        onClose={() => setIsCloneOpen(false)}
-        providers={providers}
-        onCloned={repoPath => openRepo(repoPath)}
-      />
+      <Suspense fallback={null}>
+        <CloneModal
+          isOpen={isCloneOpen}
+          onClose={() => setIsCloneOpen(false)}
+          providers={providers}
+          onCloned={repoPath => openRepo(repoPath)}
+        />
+      </Suspense>
 
       {/* About modal */}
-      <AboutModal
-        isOpen={isAboutOpen}
-        onClose={() => setIsAboutOpen(false)}
-      />
+      <Suspense fallback={null}>
+        <AboutModal
+          isOpen={isAboutOpen}
+          onClose={() => setIsAboutOpen(false)}
+        />
+      </Suspense>
     </div>
     </I18nContext.Provider>
   );

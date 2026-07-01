@@ -30,4 +30,24 @@ export default defineConfig(async () => ({
       ignored: ["**/src-tauri/**"],
     },
   },
+
+  // ── Build: split heavy vendor libs into separate chunks for better caching
+  // and faster initial load.  Components loaded via React.lazy in App.tsx are
+  // automatically split into their own chunks by Vite.
+  build: {
+    target: "esnext",
+    minify: "esbuild",
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // React core — changes rarely, cached across releases
+          "react-vendor": ["react", "react-dom"],
+          // HeroUI — large component library, separate from app code
+          "heroui-vendor": ["@heroui/react", "@heroui/styles"],
+          // Lucide icons — tree-shaken but still sizable
+          "lucide-vendor": ["lucide-react"],
+        },
+      },
+    },
+  },
 }));

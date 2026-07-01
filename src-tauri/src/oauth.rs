@@ -1,18 +1,30 @@
 //! Local-server OAuth flow for GitHub, GitLab, and Gitee.
 //!
+//! Security: Uses PKCE (Proof Key for Code Exchange) as an additional security
+//! layer on top of client_secret.  GitHub requires client_secret at the token
+//! exchange endpoint even when PKCE is used (see GitHub OAuth docs), so we send
+//! BOTH client_secret AND code_verifier.  This means an attacker would need to
+//! extract the secret from the binary AND intercept the per-session code_verifier
+//! to exchange the authorization code.
+//!
 //! Flow:
 //!   1. Frontend calls `oauth_start` with provider kind + optional host.
-//!   2. Rust picks a random free port, builds the authorization URL, opens it in the browser.
-//!   3. A minimal TCP listener waits for the browser redirect to `http://localhost:{port}/callback?code=…`.
-//!   4. Rust exchanges the code for an access token via the provider's token endpoint.
-//!   5. Returns `OAuthResult` (access_token + username + avatar_url) to the frontend.
+//!   2. Rust generates a PKCE code_verifier + code_challenge.
+//!   3. Rust picks a random free port, builds the authorization URL (with code_challenge),
+//!      opens it in the browser.
+//!   4. A minimal TCP listener waits for the browser redirect to `http://localhost:{port}/callback?code=…`.
+//!   5. Rust exchanges the code + code_verifier + client_secret for an access token.
+//!   6. Returns `OAuthResult` (access_token + username + avatar_url) to the frontend.
 
-// ── First-party OAuth credentials ────────────────────────────────────────────
+// ── OAuth credentials ────────────────────────────────────────────────────────
+// NOTE: GitHub OAuth requires client_secret at the token exchange endpoint,
+// even with PKCE. For native/desktop apps this secret cannot be fully protected,
+// which is exactly why PKCE is added as an additional layer.
 const GITHUB_CLIENT_ID:     &str = "Ov23liiZXSqeiTlZ5JHV";
 const GITHUB_CLIENT_SECRET: &str = "4aefcb76ec83e4c735c3f709d1a40c82f8e0cabd";
-// GitHub OAuth Apps require client_secret for token exchange (no PKCE support).
 const GITLAB_CLIENT_ID:     &str = "26cb9f595f88c878cf35a9bca4b7a2140a3b3b8f23c8a42180e1e843174db0a1";
 const GITLAB_CLIENT_SECRET: &str = "gloas-87933561992668d759f34cc7d5bc22f006459f3425f6960e187541c6c1f35398";
+
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::mpsc;
@@ -63,14 +75,31 @@ fn random_state() -> String {
         .collect()
 }
 
+/// PKCE code verifier — 43 random URL-safe characters (RFC 7636 §4.1).
+fn generate_code_verifier() -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+    (0..64)
+        .map(|_| CHARS[rng.gen_range(0..CHARS.len())] as char)
+        .collect()
+}
 
-/// Build the provider-specific authorization URL.
-/// Both GitHub and GitLab use plain authorization code flow with client_secret.
+/// PKCE code challenge = BASE64URL(SHA256(verifier))  (RFC 7636 §4.2).
+fn code_challenge(verifier: &str) -> String {
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
+    let hash = Sha256::digest(verifier.as_bytes());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hash)
+}
+
+/// Build the provider-specific authorization URL with PKCE.
 fn build_auth_url(
     kind: &str,
     host: &str,
     redirect_uri: &str,
     state: &str,
+    code_challenge: &str,
 ) -> String {
     match kind {
         "github" => format!(
@@ -78,11 +107,14 @@ fn build_auth_url(
              ?client_id={client_id}\
              &redirect_uri={redirect_uri}\
              &scope=repo%20read:user\
-             &state={state}",
+             &state={state}\
+             &code_challenge={cc}\
+             &code_challenge_method=S256",
             host = host,
             client_id = urlenc(GITHUB_CLIENT_ID),
             redirect_uri = urlenc(redirect_uri),
             state = urlenc(state),
+            cc = urlenc(code_challenge),
         ),
         "gitlab" => format!(
             "https://{host}/oauth/authorize\
@@ -90,11 +122,14 @@ fn build_auth_url(
              &redirect_uri={redirect_uri}\
              &response_type=code\
              &scope=api+read_user\
-             &state={state}",
+             &state={state}\
+             &code_challenge={cc}\
+             &code_challenge_method=S256",
             host = host,
             client_id = urlenc(GITLAB_CLIENT_ID),
             redirect_uri = urlenc(redirect_uri),
             state = urlenc(state),
+            cc = urlenc(code_challenge),
         ),
         _ => String::new(),
     }
@@ -176,11 +211,16 @@ fn parse_callback(path: &str) -> (Option<String>, Option<String>) {
 }
 
 /// Exchange the authorization code for an access token.
+/// Sends BOTH client_secret (required by GitHub) AND code_verifier (PKCE).
+/// PKCE adds protection against authorization code interception attacks:
+/// even if an attacker steals the code, they cannot exchange it without the
+/// per-session code_verifier that never leaves this machine.
 async fn exchange_code(
     kind: &str,
     host: &str,
     code: &str,
     redirect_uri: &str,
+    code_verifier: &str,
 ) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
@@ -196,7 +236,6 @@ async fn exchange_code(
     let mut params = HashMap::new();
     match kind {
         "github" => {
-            // GitHub OAuth Apps require client_secret; no PKCE support
             params.insert("client_id",     GITHUB_CLIENT_ID);
             params.insert("client_secret", GITHUB_CLIENT_SECRET);
         }
@@ -206,9 +245,10 @@ async fn exchange_code(
         }
         _ => return Err("Unknown provider".to_string()),
     }
-    params.insert("code",         code);
-    params.insert("redirect_uri", redirect_uri);
-    params.insert("grant_type",   "authorization_code");
+    params.insert("code",          code);
+    params.insert("redirect_uri",  redirect_uri);
+    params.insert("grant_type",    "authorization_code");
+    params.insert("code_verifier", code_verifier);
 
     let resp = client
         .post(&token_url)
@@ -303,14 +343,17 @@ pub async fn oauth_start(app: tauri::AppHandle, args: OAuthStartArgs) -> Result<
     } else {
         pick_free_port()?
     };
-    let state        = random_state();
-    let redirect_uri = format!("http://127.0.0.1:{}/callback", port);
+    let state         = random_state();
+    let code_verifier = generate_code_verifier();
+    let code_challenge_str = code_challenge(&code_verifier);
+    let redirect_uri  = format!("http://127.0.0.1:{}/callback", port);
 
     let auth_url = build_auth_url(
         &args.kind,
         &args.host,
         &redirect_uri,
         &state,
+        &code_challenge_str,
     );
 
     if auth_url.is_empty() {
@@ -348,6 +391,7 @@ pub async fn oauth_start(app: tauri::AppHandle, args: OAuthStartArgs) -> Result<
         &args.host,
         &code,
         &redirect_uri,
+        &code_verifier,
     ).await?;
 
     let (username, avatar_url, name) = fetch_user(&args.kind, &args.host, &token).await?;

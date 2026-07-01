@@ -250,8 +250,8 @@ Settings are persisted in the OS app-data directory:
 
 ### OAuth / OAuth 配置
 
-GitHub and GitLab OAuth credentials are embedded — no extra configuration needed.
-GitHub 和 GitLab 的 OAuth 凭据已内置，无需额外配置。
+GitHub and GitLab OAuth use PKCE (Proof Key for Code Exchange) as an additional security layer alongside client_secret, protecting against authorization code interception attacks.
+GitHub 和 GitLab 的 OAuth 使用 PKCE（代码交换证明密钥）作为额外安全层，防止授权码被截获攻击。
 
 For self-hosted GitLab, enter your instance URL in **Git Accounts → Add Account → Host**.
 如需使用自托管 GitLab，请在「Git 账户 → 添加账户 → 主机」中填写实例地址。
@@ -309,7 +309,7 @@ arbor/
 | Icons | [Lucide React](https://lucide.dev/) |
 | Build tool | [Vite](https://vitejs.dev/) |
 | Backend | [Rust](https://www.rust-lang.org/) stable |
-| OAuth | Authorization Code Flow (embedded client_secret) |
+| OAuth | Authorization Code Flow + PKCE (RFC 7636) |
 | i18n | React Context (zero dependencies) |
 
 ---

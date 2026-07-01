@@ -99,6 +99,8 @@ export const zhCN: Translations = {
 
   // ── Settings Modal ─────────────────────────────────────────────────────────
   settingsTitle: "设置",
+  settingsGroupGeneral: "通用",
+  settingsGroupAdvanced: "高级",
   settingsLanguage: "语言",
   settingsLanguageHint: "界面显示语言",
   settingsAppearance: "外观",
@@ -269,7 +271,13 @@ export const zhCN: Translations = {
   aiModelsDirHint: "包含 GGUF 模型文件的目录",
   aiDownloadModel: "下载模型",
   aiDownloadModelHint: "下载用于生成提交信息的轻量级 GGUF 模型",
-  aiDownloading: "正在下载模型…",
+  aiDownloading: "正在下载…",
   aiDownloadSuccess: "模型下载成功。",
-  aiDownloadError: "模型下载失败。",
+  aiDownloadError: "下载失败",
+  aiInstalledModels: "已安装模型",
+  aiModel3BNote: "推荐 · 中英文均衡",
+  aiModel7BNote: "最佳中文质量",
+  aiModel1_5BNote: "轻量",
+  aiModelInstalled: "已安装",
+  aiModelDownloadBtn: "下载",
 };

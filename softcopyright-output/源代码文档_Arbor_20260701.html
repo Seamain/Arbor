@@ -1,0 +1,3258 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>源代码文档_Arbor Git 客户端软件</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm; }
+  body { font-family: "PingFang SC", "Microsoft YaHei", monospace; font-size: 10.5pt; color: #111; }
+  .page { page-break-after: always; }
+  .page:last-child { page-break-after: auto; }
+  .header { display:flex; justify-content: space-between; font-size: 9pt; color:#555; border-bottom: 1px solid #999; padding-bottom: 4px; margin-bottom: 8px; }
+  pre { white-space: pre-wrap; word-break: break-all; font-family: "Menlo","Consolas",monospace; font-size: 9.5pt; line-height: 1.35; margin: 0; }
+  .footer { text-align:center; font-size: 9pt; color:#555; margin-top: 8px; border-top: 1px solid #999; padding-top: 4px; }
+</style>
+</head>
+<body>
+
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>#![cfg_attr(not(debug_assertions), windows_subsystem = &quot;windows&quot;)]
+fn main() {
+    arbor_lib::run()
+}
+mod git_ops;
+mod local_ai;
+mod oauth;
+use notify_debouncer_mini::{new_debouncer, notify::RecursiveMode, DebounceEventResult};
+use std::{collections::HashMap, sync::Mutex, time::Duration};
+use tauri::{
+    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
+    AppHandle, Emitter, Manager,
+};
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = &quot;camelCase&quot;)]
+pub struct UpdateInfo {
+    pub version: String,
+    pub body: Option&lt;String&gt;,
+}
+#[tauri::command]
+async fn check_for_updates(app: AppHandle) -&gt; Result&lt;Option&lt;UpdateInfo&gt;, String&gt; {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    match updater.check().await {
+        Ok(Some(update)) =&gt; Ok(Some(UpdateInfo {
+            version: update.version.clone(),
+            body: update.body.clone(),
+        })),
+        Ok(None) =&gt; Ok(None),
+        Err(e) =&gt; Err(e.to_string()),
+    }
+}
+#[tauri::command]
+async fn install_update(app: AppHandle) -&gt; Result&lt;(), String&gt; {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    if let Some(update) = updater.check().await.map_err(|e| e.to_string())? {
+        update
+            .download_and_install(|_chunk, _total| {}, || {})
+            .await
+            .map_err(|e| e.to_string())?;
+        app.restart();
+    }
+    Ok(())
+}
+struct WatcherState(
+    Mutex&lt;
+        HashMap&lt;
+            String,
+            notify_debouncer_mini::Debouncer&lt;notify_debouncer_mini::notify::RecommendedWatcher&gt;,</pre>
+<div class="footer">第 1 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>        &gt;,
+    &gt;,
+);
+#[tauri::command]
+fn watch_repo(app: AppHandle, path: String) -&gt; Result&lt;(), String&gt; {
+    let state = app.state::&lt;WatcherState&gt;();
+    let mut map = state.0.lock().map_err(|e| e.to_string())?;
+    if map.contains_key(&amp;path) {
+        return Ok(());
+    }
+    let app_handle = app.clone();
+    let path_clone = path.clone();
+    let git_dir = std::path::Path::new(&amp;path).join(&quot;.git&quot;);
+    let mut debouncer = new_debouncer(
+        Duration::from_millis(500),
+        move |result: DebounceEventResult| {
+            if let Ok(events) = result {
+                let has_worktree_change = events.iter().any(|e| {
+                    !e.path.starts_with(&amp;git_dir)
+                });
+                if has_worktree_change {
+                    let _ = app_handle.emit(&quot;repo-changed&quot;, path_clone.clone());
+                }
+            }
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    debouncer
+        .watcher()
+        .watch(std::path::Path::new(&amp;path), RecursiveMode::Recursive)
+        .map_err(|e| e.to_string())?;
+    map.insert(path, debouncer);
+    Ok(())
+}
+#[tauri::command]
+fn unwatch_repo(app: AppHandle, path: String) -&gt; Result&lt;(), String&gt; {
+    let state = app.state::&lt;WatcherState&gt;();
+    let mut map = state.0.lock().map_err(|e| e.to_string())?;
+    map.remove(&amp;path);
+    Ok(())
+}
+fn build_menu(app: &amp;AppHandle) -&gt; tauri::Result&lt;Menu&lt;tauri::Wry&gt;&gt; {
+    let file_open  = MenuItem::with_id(app, &quot;file_open&quot;,  &quot;Open Repository…&quot;, true, Some(&quot;CmdOrCtrl+O&quot;))?;
+    let file_close = MenuItem::with_id(app, &quot;file_close&quot;, &quot;Close Tab&quot;,        true, Some(&quot;CmdOrCtrl+W&quot;))?;
+    let file_menu  = Submenu::with_items(app, &quot;File&quot;, true, &amp;[
+        &amp;file_open,
+        &amp;PredefinedMenuItem::separator(app)?,
+        &amp;file_close,
+    ])?;
+    let repo_fetch      = MenuItem::with_id(app, &quot;repo_fetch&quot;,      &quot;Fetch&quot;,          true, Some(&quot;CmdOrCtrl+Shift+F&quot;))?;</pre>
+<div class="footer">第 2 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>    let repo_pull       = MenuItem::with_id(app, &quot;repo_pull&quot;,       &quot;Pull&quot;,           true, Some(&quot;CmdOrCtrl+Shift+P&quot;))?;
+    let repo_push       = MenuItem::with_id(app, &quot;repo_push&quot;,       &quot;Push&quot;,           true, Some(&quot;CmdOrCtrl+P&quot;))?;
+    let repo_refresh    = MenuItem::with_id(app, &quot;repo_refresh&quot;,    &quot;Refresh Status&quot;, true, Some(&quot;CmdOrCtrl+R&quot;))?;
+    let repo_new_branch = MenuItem::with_id(app, &quot;repo_new_branch&quot;, &quot;New Branch…&quot;,    true, Some(&quot;CmdOrCtrl+Shift+B&quot;))?;
+    let repo_stash      = MenuItem::with_id(app, &quot;repo_stash&quot;,      &quot;Stash Changes&quot;,  true, Some(&quot;CmdOrCtrl+Shift+S&quot;))?;
+    let repo_menu = Submenu::with_items(app, &quot;Repository&quot;, true, &amp;[
+        &amp;repo_fetch,
+        &amp;repo_pull,
+        &amp;repo_push,
+        &amp;PredefinedMenuItem::separator(app)?,
+        &amp;repo_refresh,
+        &amp;PredefinedMenuItem::separator(app)?,
+        &amp;repo_new_branch,
+        &amp;PredefinedMenuItem::separator(app)?,
+        &amp;repo_stash,
+    ])?;
+    let view_history = MenuItem::with_id(app, &quot;view_history&quot;, &quot;Show History&quot;,   true, Some(&quot;CmdOrCtrl+1&quot;))?;
+    let view_diff    = MenuItem::with_id(app, &quot;view_diff&quot;,    &quot;Show Diff&quot;,      true, Some(&quot;CmdOrCtrl+2&quot;))?;
+    let view_console = MenuItem::with_id(app, &quot;view_console&quot;, &quot;Toggle Console&quot;, true, Some(&quot;CmdOrCtrl+`&quot;))?;
+    let view_sidebar = MenuItem::with_id(app, &quot;view_sidebar&quot;, &quot;Toggle Sidebar&quot;, true, Some(&quot;CmdOrCtrl+B&quot;))?;
+    let view_menu = Submenu::with_items(app, &quot;View&quot;, true, &amp;[
+        &amp;view_history,
+        &amp;view_diff,
+        &amp;PredefinedMenuItem::separator(app)?,
+        &amp;view_console,
+        &amp;view_sidebar,
+    ])?;
+    let edit_menu = Submenu::with_items(app, &quot;Edit&quot;, true, &amp;[
+        &amp;PredefinedMenuItem::undo(app, None)?,
+        &amp;PredefinedMenuItem::redo(app, None)?,
+        &amp;PredefinedMenuItem::separator(app)?,
+        &amp;PredefinedMenuItem::cut(app, None)?,
+        &amp;PredefinedMenuItem::copy(app, None)?,
+        &amp;PredefinedMenuItem::paste(app, None)?,
+        &amp;PredefinedMenuItem::select_all(app, None)?,
+    ])?;
+    let help_about     = MenuItem::with_id(app, &quot;app_about&quot;,        &quot;About Arbor&quot;,        true, None::&lt;&amp;str&gt;)?;
+    let help_settings  = MenuItem::with_id(app, &quot;app_settings&quot;,     &quot;Preferences…&quot;,       true, Some(&quot;CmdOrCtrl+,&quot;))?;
+    let help_check_upd = MenuItem::with_id(app, &quot;check_for_update&quot;, &quot;Check for Updates…&quot;, true, None::&lt;&amp;str&gt;)?;
+    let help_menu = Submenu::with_items(app, &quot;Help&quot;, true, &amp;[
+        &amp;help_settings,
+        &amp;PredefinedMenuItem::separator(app)?,
+        &amp;help_check_upd,
+        &amp;PredefinedMenuItem::separator(app)?,
+        &amp;help_about,
+    ])?;
+    Menu::with_items(app, &amp;[&amp;file_menu, &amp;edit_menu, &amp;repo_menu, &amp;view_menu, &amp;help_menu])
+}
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {</pre>
+<div class="footer">第 3 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>    tauri::Builder::default()
+        .setup(|app| {
+            let window = app
+                .get_webview_window(&quot;main&quot;)
+                .ok_or(&quot;main window not found&quot;)?;
+            #[cfg(target_os = &quot;macos&quot;)]
+            {
+                use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
+                let _ = apply_vibrancy(&amp;window, NSVisualEffectMaterial::HudWindow, None, None);
+            }
+            #[cfg(target_os = &quot;windows&quot;)]
+            {
+                use window_vibrancy::apply_acrylic;
+                let _ = apply_acrylic(&amp;window, Some((245, 248, 252, 200)));
+            }
+            #[cfg(target_os = &quot;linux&quot;)]
+            {
+                let _ = window.eval(
+                    &quot;document.documentElement.setAttribute(&#x27;data-platform&#x27;,&#x27;linux&#x27;); \
+                     document.documentElement.style.background=&#x27;#f1f4f8&#x27;; \
+                     document.body &amp;&amp; (document.body.style.background=&#x27;#f1f4f8&#x27;);&quot;
+                );
+            }
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                #[cfg(target_os = &quot;macos&quot;)]
+                {
+                    use tauri_plugin_notification::NotificationExt;
+                    let _ = app_handle.notification().request_permission();
+                }
+                match build_menu(&amp;app_handle) {
+                    Ok(menu) =&gt; {
+                        if let Err(e) = app_handle.set_menu(menu) {
+                            eprintln!(&quot;Failed to set menu: {}&quot;, e);
+                        }
+                    }
+                    Err(e) =&gt; {
+                        eprintln!(&quot;Failed to build menu: {}&quot;, e);
+                    }
+                }
+                let handle = app_handle.clone();
+                app_handle.on_menu_event(move |_app, event| {
+                    let _ = handle.emit(&quot;menu-action&quot;, event.id().0.clone());
+                });
+            });
+            Ok(())
+        })
+        .manage(WatcherState(Mutex::new(HashMap::new())))
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())</pre>
+<div class="footer">第 4 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .invoke_handler(tauri::generate_handler![
+            watch_repo,
+            unwatch_repo,
+            check_for_updates,
+            install_update,
+            git_ops::git_check_repo,
+            git_ops::git_status,
+            git_ops::git_fetch,
+            git_ops::git_pull,
+            git_ops::git_push,
+            git_ops::git_modified_files,
+            git_ops::git_diff,
+            git_ops::git_get_branches,
+            git_ops::git_checkout,
+            git_ops::git_create_branch,
+            git_ops::git_delete_branch,
+            git_ops::git_rebase,
+            git_ops::git_merge,
+            git_ops::git_head_oid,
+            git_ops::git_log_graph,
+            git_ops::git_conflicted_files,
+            git_ops::read_file_content,
+            git_ops::write_file_content,
+            git_ops::git_add,
+            git_ops::git_add_all,
+            git_ops::git_add_files,
+            git_ops::ai_generate_commit,
+            git_ops::ai_generate_commit_local,
+            git_ops::ai_generate_commit_for_files,
+            git_ops::ai_generate_commit_local_for_files,
+            git_ops::ai_list_local_models,
+            git_ops::ai_models_dir,
+            git_ops::ai_download_model,
+            git_ops::ai_delete_model,
+            git_ops::git_commit,
+            git_ops::git_stash,
+            git_ops::git_auto_stash,
+            git_ops::git_stash_pop,
+            git_ops::git_stash_drop,
+            git_ops::git_checkout_files,
+            git_ops::git_discard_file,
+            git_ops::git_discard_all_changes,
+            git_ops::git_reset_hard,
+            git_ops::open_in_editor,
+            git_ops::git_clone,
+            git_ops::git_remote_url,
+            oauth::oauth_start
+        ])</pre>
+<div class="footer">第 5 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>        .run(tauri::generate_context!())
+        .expect(&quot;error while running tauri application&quot;);
+}
+use git2::{
+    BranchType, build::CheckoutBuilder, DiffFormat, DiffOptions, FetchOptions, MergeOptions,
+    PushOptions, RemoteCallbacks, Repository, ResetType, StashFlags,
+};
+use std::path::{Path, PathBuf};
+fn safe_join(repo_path: &amp;str, file_path: &amp;str) -&gt; Result&lt;PathBuf, String&gt; {
+    let base = Path::new(repo_path)
+        .canonicalize()
+        .map_err(|e| format!(&quot;Cannot resolve repo path: {}&quot;, e))?;
+    let full = base.join(file_path);
+    if let Ok(canon) = full.canonicalize() {
+        if !canon.starts_with(&amp;base) {
+            return Err(format!(
+                &quot;Path &#x27;{}&#x27; is outside the repository directory.&quot;, file_path
+            ));
+        }
+        return Ok(canon);
+    }
+    let parent = full
+        .parent()
+        .unwrap_or_else(|| Path::new(repo_path));
+    let canon_parent = parent
+        .canonicalize()
+        .map_err(|e| format!(&quot;Cannot resolve parent directory: {}&quot;, e))?;
+    if !canon_parent.starts_with(&amp;base) {
+        return Err(format!(
+            &quot;Path &#x27;{}&#x27; is outside the repository directory.&quot;, file_path
+        ));
+    }
+    Ok(full)
+}
+fn open(path: &amp;str) -&gt; Result&lt;Repository, String&gt; {
+    Repository::open(path).map_err(|e| e.to_string())
+}
+fn make_callbacks&lt;&#x27;a&gt;() -&gt; RemoteCallbacks&lt;&#x27;a&gt; {
+    let mut cb = RemoteCallbacks::new();
+    let attempts = std::cell::Cell::new(0u32);
+    cb.credentials(move |url, username, allowed| {
+        let n = attempts.get();
+        attempts.set(n + 1);
+        if n &gt;= 3 {
+            return Err(git2::Error::from_str(
+                &quot;authentication failed after multiple attempts&quot;,
+            ));
+        }
+        if allowed.contains(git2::CredentialType::SSH_KEY) {
+            let user = username.unwrap_or(&quot;git&quot;);</pre>
+<div class="footer">第 6 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>            if let Ok(cred) = git2::Cred::ssh_key_from_agent(user) {
+                return Ok(cred);
+            }
+            let home = std::env::var(&quot;HOME&quot;)
+                .or_else(|_| std::env::var(&quot;USERPROFILE&quot;))
+                .unwrap_or_default();
+            let ssh_dir = std::path::Path::new(&amp;home).join(&quot;.ssh&quot;);
+            for key_name in &amp;[&quot;id_ed25519&quot;, &quot;id_ecdsa&quot;, &quot;id_rsa&quot;] {
+                let private = ssh_dir.join(key_name);
+                let public = ssh_dir.join(format!(&quot;{}.pub&quot;, key_name));
+                if private.exists() {
+                    match git2::Cred::ssh_key(user, Some(&amp;public), &amp;private, None) {
+                        Ok(cred) =&gt; return Ok(cred),
+                        Err(_) =&gt; continue,
+                    }
+                }
+            }
+        }
+        if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
+            if let Ok(config) = git2::Config::open_default() {
+                if let Ok(cred) = git2::Cred::credential_helper(&amp;config, url, username) {
+                    return Ok(cred);
+                }
+            }
+        }
+        if allowed.contains(git2::CredentialType::DEFAULT) {
+            if let Ok(cred) = git2::Cred::default() {
+                return Ok(cred);
+            }
+        }
+        Err(git2::Error::from_str(
+            &quot;no credentials available — configure SSH keys or run `git credential approve`&quot;,
+        ))
+    });
+    cb
+}
+fn fetch_options&lt;&#x27;a&gt;() -&gt; FetchOptions&lt;&#x27;a&gt; {
+    let mut fo = FetchOptions::new();
+    fo.remote_callbacks(make_callbacks());
+    fo
+}
+fn push_options&lt;&#x27;a&gt;() -&gt; PushOptions&lt;&#x27;a&gt; {
+    let mut po = PushOptions::new();
+    po.remote_callbacks(make_callbacks());
+    po
+}
+fn is_ssh_url(url: &amp;str) -&gt; bool {
+    url.starts_with(&quot;git@&quot;) || url.starts_with(&quot;ssh://&quot;)
+}
+fn origin_url(repo: &amp;Repository) -&gt; Option&lt;String&gt; {</pre>
+<div class="footer">第 7 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>    repo.find_remote(&quot;origin&quot;)
+        .ok()
+        .and_then(|r| r.url().map(|u| u.to_string()))
+}
+fn run_git_command(repo_path: &amp;str, args: &amp;[&amp;str]) -&gt; Result&lt;String, String&gt; {
+    git_command_output(repo_path, args)
+}
+#[cfg(target_os = &quot;windows&quot;)]
+fn git_command_output(repo_path: &amp;str, args: &amp;[&amp;str]) -&gt; Result&lt;String, String&gt; {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let output = std::process::Command::new(&quot;git&quot;)
+        .current_dir(repo_path)
+        .args(args)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!(&quot;failed to run git: {e}&quot;))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&amp;output.stdout).trim().to_string())
+    } else {
+        Err(String::from_utf8_lossy(&amp;output.stderr).trim().to_string())
+    }
+}
+#[cfg(not(target_os = &quot;windows&quot;))]
+fn git_command_output(repo_path: &amp;str, args: &amp;[&amp;str]) -&gt; Result&lt;String, String&gt; {
+    let output = std::process::Command::new(&quot;git&quot;)
+        .current_dir(repo_path)
+        .args(args)
+        .output()
+        .map_err(|e| format!(&quot;failed to run git: {e}&quot;))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&amp;output.stdout).trim().to_string())
+    } else {
+        Err(String::from_utf8_lossy(&amp;output.stderr).trim().to_string())
+    }
+}
+#[tauri::command]
+pub async fn git_check_repo(path: String) -&gt; Result&lt;bool, String&gt; {
+    Ok(Repository::open(&amp;path).is_ok())
+}
+#[tauri::command]
+pub async fn git_status(path: String) -&gt; Result&lt;String, String&gt; {
+    let repo = open(&amp;path)?;
+    let head = repo.head().ok();
+    let head_oid = head
+        .as_ref()
+        .and_then(|h| h.peel_to_commit().ok())
+        .map(|c| c.id().to_string())
+        .unwrap_or_else(|| &quot;(initial)&quot;.to_string());
+    let branch = head</pre>
+<div class="footer">第 8 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>        .as_ref()
+        .and_then(|h| h.shorthand())
+        .unwrap_or(&quot;HEAD&quot;)
+        .to_string();
+    let mut out = format!(&quot;# branch.oid {}\n&quot;, head_oid);
+    out.push_str(&amp;format!(&quot;# branch.head {}\n&quot;, branch));
+    if let Some(ref head_ref) = head {
+        if let Some(ref_name) = head_ref.name() {
+            if let Ok(upstream_buf) = repo.branch_upstream_name(ref_name) {
+                if let Some(upstream_name) = upstream_buf.as_str() {
+                    out.push_str(&amp;format!(&quot;# branch.upstream {}\n&quot;, upstream_name));
+                    let local_oid = head_ref.peel_to_commit().ok().map(|c| c.id());
+                    let upstream_oid = repo
+                        .find_reference(upstream_name)
+                        .ok()
+                        .and_then(|r| r.peel_to_commit().ok())
+                        .and_then(|c| {
+                            repo.find_object(c.id(), None).ok().map(|_| c.id())
+                        });
+                    if let (Some(l), Some(u)) = (local_oid, upstream_oid) {
+                        if let Ok((ahead, behind)) = repo.graph_ahead_behind(l, u) {
+                            out.push_str(&amp;format!(&quot;# branch.ab +{} -{}\n&quot;, ahead, behind));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut opts = git2::StatusOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_ignored(false);
+    let statuses = repo.statuses(Some(&amp;mut opts)).map_err(|e| e.to_string())?;
+    for entry in statuses.iter() {
+        let flags = entry.status();
+        let path_str = entry.path().unwrap_or(&quot;&quot;);
+        if flags.contains(git2::Status::CONFLICTED) {
+            out.push_str(&amp;format!(&quot;u UU N... 0 0 0 0 0 0 0 {}\n&quot;, path_str));
+            continue;
+        }
+        let xy = status_to_porcelain(flags);
+        if xy == &quot;. .&quot; {
+            continue;
+        }
+        out.push_str(&amp;format!(&quot;1 {} N... 0 0 0 0 0 {}\n&quot;, xy, path_str));
+    }
+    Ok(out)
+}
+fn status_to_porcelain(flags: git2::Status) -&gt; &amp;&#x27;static str {
+    use git2::Status;</pre>
+<div class="footer">第 9 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>    let idx = if flags.intersects(Status::INDEX_NEW) {
+        &#x27;A&#x27;
+    } else if flags.intersects(Status::INDEX_MODIFIED) {
+        &#x27;M&#x27;
+    } else if flags.intersects(Status::INDEX_DELETED) {
+        &#x27;D&#x27;
+    } else if flags.intersects(Status::INDEX_RENAMED) {
+        &#x27;R&#x27;
+    } else if flags.intersects(Status::INDEX_TYPECHANGE) {
+        &#x27;T&#x27;
+    } else {
+        &#x27;.&#x27;
+    };
+    let wt = if flags.intersects(Status::WT_NEW) {
+        &#x27;?&#x27;
+    } else if flags.intersects(Status::WT_MODIFIED) {
+        &#x27;M&#x27;
+    } else if flags.intersects(Status::WT_DELETED) {
+        &#x27;D&#x27;
+    } else if flags.intersects(Status::WT_TYPECHANGE) {
+        &#x27;T&#x27;
+    } else if flags.intersects(Status::CONFLICTED) {
+        &#x27;U&#x27;
+    } else {
+        &#x27;.&#x27;
+    };
+    match (idx, wt) {
+        (&#x27;A&#x27;, &#x27;.&#x27;) =&gt; &quot;A .&quot;,
+        (&#x27;M&#x27;, &#x27;.&#x27;) =&gt; &quot;M .&quot;,
+        (&#x27;D&#x27;, &#x27;.&#x27;) =&gt; &quot;D .&quot;,
+        (&#x27;R&#x27;, &#x27;.&#x27;) =&gt; &quot;R .&quot;,
+        (&#x27;T&#x27;, &#x27;.&#x27;) =&gt; &quot;T .&quot;,
+        (&#x27;.&#x27;, &#x27;?&#x27;) =&gt; &quot;? ?&quot;,
+        (&#x27;.&#x27;, &#x27;M&#x27;) =&gt; &quot;. M&quot;,
+        (&#x27;.&#x27;, &#x27;D&#x27;) =&gt; &quot;. D&quot;,
+        (&#x27;.&#x27;, &#x27;T&#x27;) =&gt; &quot;. T&quot;,
+        (&#x27;.&#x27;, &#x27;U&#x27;) =&gt; &quot;U U&quot;,
+        (&#x27;M&#x27;, &#x27;M&#x27;) =&gt; &quot;M M&quot;,
+        _ =&gt; &quot;. .&quot;,
+    }
+}
+#[tauri::command]
+pub async fn git_fetch(path: String) -&gt; Result&lt;String, String&gt; {
+    let repo = open(&amp;path)?;
+    if origin_url(&amp;repo).as_deref().map(is_ssh_url).unwrap_or(false) {
+        return run_git_command(&amp;path, &amp;[&quot;fetch&quot;, &quot;origin&quot;]);
+    }
+    let mut remote = repo.find_remote(&quot;origin&quot;).map_err(|e| e.to_string())?;
+    remote
+        .fetch(&amp;[] as &amp;[&amp;str], Some(&amp;mut fetch_options()), None)</pre>
+<div class="footer">第 10 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>        .map_err(|e| e.to_string())?;
+    Ok(&quot;Fetched from origin.&quot;.to_string())
+}
+#[tauri::command]
+pub async fn git_pull(path: String) -&gt; Result&lt;String, String&gt; {
+    let repo = open(&amp;path)?;
+    if origin_url(&amp;repo).as_deref().map(is_ssh_url).unwrap_or(false) {
+        return run_git_command(&amp;path, &amp;[&quot;pull&quot;, &quot;--ff-only&quot;, &quot;origin&quot;]);
+    }
+    let mut remote = repo.find_remote(&quot;origin&quot;).map_err(|e| e.to_string())?;
+    remote
+        .fetch(&amp;[] as &amp;[&amp;str], Some(&amp;mut fetch_options()), None)
+        .map_err(|e| e.to_string())?;
+    let fetch_head = repo
+        .find_reference(&quot;FETCH_HEAD&quot;)
+        .map_err(|e| e.to_string())?;
+    let fetch_commit = repo
+        .reference_to_annotated_commit(&amp;fetch_head)
+        .map_err(|e| e.to_string())?;
+    let (analysis, _) = repo
+        .merge_analysis(&amp;[&amp;fetch_commit])
+        .map_err(|e| e.to_string())?;
+    if analysis.is_up_to_date() {
+        return Ok(&quot;Already up to date.&quot;.to_string());
+    }
+    if analysis.is_fast_forward() {
+        let refname = {
+            let head = repo.head().map_err(|e| e.to_string())?;
+            head.name().unwrap_or(&quot;HEAD&quot;).to_string()
+        };
+        let target_oid = fetch_commit.id();
+        let mut reference = repo
+            .find_reference(&amp;refname)
+            .map_err(|e| e.to_string())?;
+        reference
+            .set_target(target_oid, &quot;Fast-forward pull&quot;)
+            .map_err(|e| e.to_string())?;
+        repo.set_head(&amp;refname).map_err(|e| e.to_string())?;
+        repo.checkout_head(Some(CheckoutBuilder::default().force()))
+            .map_err(|e| e.to_string())?;
+        Ok(&quot;Fast-forwarded.&quot;.to_string())
+    } else if analysis.is_normal() {
+        repo.merge(&amp;[&amp;fetch_commit], Some(&amp;mut MergeOptions::new()), None)
+            .map_err(|e| e.to_string())?;
+        if repo.index().map_err(|e| e.to_string())?.has_conflicts() {
+            return Err(&quot;Merge conflict — please resolve manually.&quot;.to_string());
+        }
+        let sig = repo.signature().map_err(|e| e.to_string())?;
+        let mut index = repo.index().map_err(|e| e.to_string())?;
+        let tree_oid = index.write_tree().map_err(|e| e.to_string())?;</pre>
+<div class="footer">第 11 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>        let tree = repo.find_tree(tree_oid).map_err(|e| e.to_string())?;
+        let head_commit = repo
+            .head()
+            .map_err(|e| e.to_string())?
+            .peel_to_commit()
+            .map_err(|e| e.to_string())?;
+        let fetch_commit_obj = repo
+            .find_commit(fetch_commit.id())
+            .map_err(|e| e.to_string())?;
+        repo.commit(
+            Some(&quot;HEAD&quot;),
+            &amp;sig,
+            &amp;sig,
+            &quot;Merge&quot;,
+            &amp;tree,
+            &amp;[&amp;head_commit, &amp;fetch_commit_obj],
+        )
+        .map_err(|e| e.to_string())?;
+        repo.cleanup_state().map_err(|e| e.to_string())?;
+        Ok(&quot;Merged.&quot;.to_string())
+    } else {
+        Err(&quot;Cannot pull: unborn or unresolvable state.&quot;.to_string())
+    }
+}
+#[tauri::command]
+pub async fn git_push(path: String) -&gt; Result&lt;String, String&gt; {
+    let repo = open(&amp;path)?;
+    if origin_url(&amp;repo).as_deref().map(is_ssh_url).unwrap_or(false) {
+        let head = repo.head().map_err(|e| e.to_string())?;
+        let branch = head.shorthand().ok_or(&quot;HEAD is detached&quot;)?.to_string();
+        return run_git_command(&amp;path, &amp;[&quot;push&quot;, &quot;origin&quot;, &amp;branch]);
+    }
+    let head = repo.head().map_err(|e| e.to_string())?;
+    let branch = head
+        .shorthand()
+        .ok_or(&quot;HEAD is detached&quot;)?
+        .to_string();
+    let refspec = format!(&quot;refs/heads/{}:refs/heads/{}&quot;, branch, branch);
+    let mut remote = repo.find_remote(&quot;origin&quot;).map_err(|e| e.to_string())?;
+    remote
+        .push(&amp;[refspec.as_str()], Some(&amp;mut push_options()))
+        .map_err(|e| e.to_string())?;
+    Ok(format!(&quot;Pushed &#x27;{}&#x27; to origin.&quot;, branch))
+}
+#[tauri::command]
+pub async fn git_modified_files(path: String) -&gt; Result&lt;Vec&lt;String&gt;, String&gt; {
+    let repo = open(&amp;path)?;
+    let mut opts = git2::StatusOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)</pre>
+<div class="footer">第 12 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>        .include_ignored(false);
+    let statuses = repo.statuses(Some(&amp;mut opts)).map_err(|e| e.to_string())?;
+    let files = statuses
+        .iter()
+        .filter_map(|e| {
+            let s = e.status();
+            if s.is_empty() {
+                None
+            } else {
+                e.path().map(|p| p.to_string())
+            }
+        })
+        .collect();
+    Ok(files)
+}
+#[tauri::command]
+pub async fn git_diff(path: String, file_path: String) -&gt; Result&lt;String, String&gt; {
+    let repo = open(&amp;path)?;
+    let mut result = String::new();
+    let head_tree = repo
+        .head()
+        .ok()
+        .and_then(|h| h.peel_to_tree().ok());
+    let mut diff_opts = DiffOptions::new();
+    diff_opts.pathspec(&amp;file_path);
+    let staged_diff = repo
+        .diff_tree_to_index(head_tree.as_ref(), None, Some(&amp;mut diff_opts))
+        .map_err(|e| e.to_string())?;
+    diff_to_string(&amp;staged_diff, &amp;mut result)?;
+    let mut diff_opts2 = DiffOptions::new();
+    diff_opts2.pathspec(&amp;file_path);
+    let worktree_diff = repo
+        .diff_index_to_workdir(None, Some(&amp;mut diff_opts2))
+        .map_err(|e| e.to_string())?;
+    diff_to_string(&amp;worktree_diff, &amp;mut result)?;
+    if result.trim().is_empty() {
+        let full_path = Path::new(&amp;path).join(&amp;file_path);
+        if full_path.exists() {
+            let content = std::fs::read_to_string(&amp;full_path).unwrap_or_default();
+            let line_count = content.lines().count();
+            result.push_str(&amp;format!(
+                &quot;--- /dev/null\n+++ b/{}\n@@ -0,0 +1,{} @@\n&quot;,
+                file_path, line_count
+            ));
+            for line in content.lines() {
+                result.push(&#x27;+&#x27;);
+                result.push_str(line);
+                result.push(&#x27;\n&#x27;);
+            }
+        }</pre>
+<div class="footer">第 13 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>    }
+    Ok(result)
+}
+fn diff_to_string(diff: &amp;git2::Diff, out: &amp;mut String) -&gt; Result&lt;(), String&gt; {
+    diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
+        let prefix = match line.origin() {
+            &#x27;+&#x27; =&gt; &quot;+&quot;,
+            &#x27;-&#x27; =&gt; &quot;-&quot;,
+            &#x27; &#x27; =&gt; &quot; &quot;,
+            &#x27;H&#x27; =&gt; &quot;&quot;,  // hunk header — already included in line content
+            &#x27;F&#x27; =&gt; &quot;&quot;,  // file header
+            _ =&gt; &quot;&quot;,
+        };
+        let content = std::str::from_utf8(line.content()).unwrap_or(&quot;&quot;);
+        match line.origin() {
+            &#x27;F&#x27; | &#x27;H&#x27; =&gt; out.push_str(content),
+            _ =&gt; {
+                out.push_str(prefix);
+                out.push_str(content);
+            }
+        }
+        true
+    })
+    .map_err(|e| e.to_string())
+}
+#[tauri::command]
+pub async fn git_get_branches(path: String) -&gt; Result&lt;Vec&lt;String&gt;, String&gt; {
+    let repo = open(&amp;path)?;
+    let mut branches = Vec::new();
+    if let Ok(head) = repo.head() {
+        if let Some(name) = head.shorthand() {
+            branches.push(format!(&quot;* {}&quot;, name));
+        }
+    }
+    for branch in repo
+        .branches(Some(BranchType::Local))
+        .map_err(|e| e.to_string())?
+    {
+        let (branch, _) = branch.map_err(|e| e.to_string())?;
+        if let Some(name) = branch.name().map_err(|e| e.to_string())? {
+            let prefix = if branch.is_head() { &quot;* &quot; } else { &quot;  &quot; };
+            let entry = format!(&quot;{}{}&quot;, prefix, name);
+            if !branches.contains(&amp;entry) {
+                branches.push(entry);
+            }
+        }
+    }
+    for branch in repo
+        .branches(Some(BranchType::Remote))
+        .map_err(|e| e.to_string())?</pre>
+<div class="footer">第 14 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>    {
+        let (branch, _) = branch.map_err(|e| e.to_string())?;
+        if let Some(name) = branch.name().map_err(|e| e.to_string())? {
+            branches.push(format!(&quot;  remotes/{}&quot;, name));
+        }
+    }
+    Ok(branches)
+}
+#[tauri::command]
+pub async fn git_checkout(path: String, branch: String) -&gt; Result&lt;String, String&gt; {
+    let repo = open(&amp;path)?;
+    let (object, reference) = repo
+        .revparse_ext(&amp;branch)
+        .map_err(|e| e.to_string())?;
+    repo.checkout_tree(&amp;object, None)
+        .map_err(|e| e.to_string())?;
+    match reference {
+        Some(gref) =&gt; repo
+            .set_head(gref.name().unwrap_or(&amp;branch))
+            .map_err(|e| e.to_string())?,
+        None =&gt; repo
+            .set_head_detached(object.id())
+            .map_err(|e| e.to_string())?,
+    }
+    Ok(format!(&quot;Switched to &#x27;{}&#x27;.&quot;, branch))
+}
+#[tauri::command]
+pub async fn git_create_branch(path: String, branch: String) -&gt; Result&lt;String, String&gt; {
+    let repo = open(&amp;path)?;
+    let head = repo
+        .head()
+        .map_err(|e| e.to_string())?
+        .peel_to_commit()
+        .map_err(|e| e.to_string())?;
+    repo.branch(&amp;branch, &amp;head, false)
+        .map_err(|e| e.to_string())?;
+    let refname = format!(&quot;refs/heads/{}&quot;, branch);
+    repo.set_head(&amp;refname).map_err(|e| e.to_string())?;
+    repo.checkout_head(Some(CheckoutBuilder::default().force()))
+        .map_err(|e| e.to_string())?;
+    Ok(format!(&quot;Created and switched to &#x27;{}&#x27;.&quot;, branch))
+}
+#[tauri::command]
+pub async fn git_delete_branch(
+    path: String,
+    branch: String,
+    force: bool,
+) -&gt; Result&lt;String, String&gt; {
+    let repo = open(&amp;path)?;
+    let mut b = repo</pre>
+<div class="footer">第 15 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>        .find_branch(&amp;branch, BranchType::Local)
+        .map_err(|e| e.to_string())?;
+    if force {
+        b.delete().map_err(|e| e.to_string())?;
+    } else {
+        let head_oid = repo
+            .head()
+            .map_err(|e| e.to_string())?
+            .peel_to_commit()
+            .map_err(|e| e.to_string())?
+            .id();
+        let branch_oid = b
+            .get()
+            .peel_to_commit()
+            .map_err(|e| e.to_string())?
+            .id();
+        let merged = repo
+            .graph_descendant_of(head_oid, branch_oid)
+            .map_err(|e| e.to_string())?;
+        if !merged {
+            return Err(format!(
+                &quot;Branch &#x27;{}&#x27; is not fully merged. Use force=true to delete anyway.&quot;,
+                branch
+            ));
+        }
+        b.delete().map_err(|e| e.to_string())?;
+    }
+    Ok(format!(&quot;Deleted branch &#x27;{}&#x27;.&quot;, branch))
+}
+#[tauri::command]
+pub async fn git_rebase(path: String, branch: String) -&gt; Result&lt;String, String&gt; {
+    let repo = open(&amp;path)?;
+    let upstream = repo
+        .revparse_single(&amp;branch)
+        .map_err(|e| e.to_string())?;
+    let upstream_commit = repo
+        .find_annotated_commit(upstream.id())
+        .map_err(|e| e.to_string())?;
+    let mut rebase = repo
+        .rebase(None, Some(&amp;upstream_commit), None, None)
+        .map_err(|e| e.to_string())?;
+    let sig = repo.signature().map_err(|e| e.to_string())?;
+    while let Some(op) = rebase.next() {
+        op.map_err(|e| e.to_string())?;
+        if repo.index().map_err(|e| e.to_string())?.has_conflicts() {
+            rebase.abort().ok();
+            return Err(&quot;Rebase conflict — aborted. Resolve conflicts manually.&quot;.to_string());
+        }
+        rebase.commit(None, &amp;sig, None).map_err(|e| e.to_string())?;
+    }</pre>
+<div class="footer">第 16 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>    rebase.finish(Some(&amp;sig)).map_err(|e| e.to_string())?;
+    Ok(format!(&quot;Rebased onto &#x27;{}&#x27;.&quot;, branch))
+}
+#[tauri::command]
+pub async fn git_merge(path: String, branch: String, strategy: String) -&gt; Result&lt;String, String&gt; {
+    let repo = open(&amp;path)?;
+    let branch_ref = repo
+        .revparse_single(&amp;branch)
+        .map_err(|e| e.to_string())?;
+    let annotated = repo
+        .find_annotated_commit(branch_ref.id())
+        .map_err(|e| e.to_string())?;
+    let (analysis, pref) = repo
+        .merge_analysis(&amp;[&amp;annotated])
+        .map_err(|e| e.to_string())?;
+    if analysis.is_up_to_date() {
+        return Ok(&quot;Already up to date.&quot;.to_string());
+    }
+    let force_no_ff =
+        strategy == &quot;no-ff&quot; || pref.contains(git2::MergePreference::NO_FAST_FORWARD);
+    if analysis.is_fast_forward() &amp;&amp; !force_no_ff &amp;&amp; strategy != &quot;no-ff&quot; {
+        let target = branch_ref.id();
+        let refname = repo.head().map_err(|e| e.to_string())?.name().unwrap_or(&quot;HEAD&quot;).to_string();
+        if let Ok(mut reference) = repo.find_reference(&amp;refname) {
+            reference.set_target(target, &quot;Fast-forward merge&quot;).map_err(|e| e.to_string())?;
+        }
+        repo.set_head(&amp;refname).map_err(|e| e.to_string())?;
+        repo.checkout_head(Some(CheckoutBuilder::default().force()))
+            .map_err(|e| e.to_string())?;
+        return Ok(&quot;Fast-forwarded.&quot;.to_string());
+    }
+    if strategy == &quot;ff-only&quot; {
+        return Err(&quot;Cannot fast-forward only merge.&quot;.to_string());
+    }
+    repo.merge(&amp;[&amp;annotated], None, None)
+        .map_err(|e| e.to_string())?;
+    if repo.index().map_err(|e| e.to_string())?.has_conflicts() {
+        return Err(&quot;Merge conflict — resolve manually.&quot;.to_string());
+    }
+    let sig = repo.signature().map_err(|e| e.to_string())?;
+    let mut index = repo.index().map_err(|e| e.to_string())?;
+    let tree_oid = index.write_tree().map_err(|e| e.to_string())?;
+    let tree = repo.find_tree(tree_oid).map_err(|e| e.to_string())?;
+    let head_commit = repo
+        .head()
+        .map_err(|e| e.to_string())?
+        .peel_to_commit()
+        .map_err(|e| e.to_string())?;
+    let merge_commit = repo
+        .find_commit(annotated.id())</pre>
+<div class="footer">第 17 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>        .map_err(|e| e.to_string())?;
+    repo.commit(
+        Some(&quot;HEAD&quot;),
+        &amp;sig,
+        &amp;sig,
+        &amp;format!(&quot;Merge branch &#x27;{}&#x27;&quot;, branch),
+        &amp;tree,
+        &amp;[&amp;head_commit, &amp;merge_commit],
+    )
+    .map_err(|e| e.to_string())?;
+    repo.cleanup_state().map_err(|e| e.to_string())?;
+    Ok(format!(&quot;Merged &#x27;{}&#x27;.&quot;, branch))
+}
+#[tauri::command]
+pub async fn git_head_oid(path: String) -&gt; Result&lt;String, String&gt; {
+    let repo = open(&amp;path)?;
+    let head = repo.head().map_err(|e| e.to_string())?;
+    let oid = head
+        .peel_to_commit()
+        .map_err(|e| e.to_string())?
+        .id()
+        .to_string();
+    let branch = head.shorthand().unwrap_or(&quot;HEAD&quot;).to_string();
+    Ok(format!(&quot;{}~|~{}&quot;, oid, branch))
+}
+#[tauri::command]
+pub async fn git_log_graph(path: String) -&gt; Result&lt;Vec&lt;String&gt;, String&gt; {
+    let repo = open(&amp;path)?;
+    let mut walk = match repo.revwalk() {
+        Ok(w) =&gt; w,
+        Err(_) =&gt; return Ok(vec![]),
+    };
+    if walk.set_sorting(git2::Sort::TIME | git2::Sort::TOPOLOGICAL).is_err() {
+        return Ok(vec![]);
+    }
+    let all_refs = repo.references().map_err(|e| e.to_string())?;
+    for reference in all_refs.flatten() {
+        let name = match reference.name() {
+            Some(n) =&gt; n.to_string(),
+            None =&gt; continue,
+        };
+        if name == &quot;refs/stash&quot; || name.starts_with(&quot;refs/stash/&quot;) {
+            continue;
+        }
+        if let Ok(oid) = reference.peel_to_commit().map(|c| c.id()) {
+            let _ = walk.push(oid); // ignore errors for packed refs etc.
+        }
+    }
+    let refs = repo.references().map_err(|e| e.to_string())?;
+    let mut ref_map: std::collections::HashMap&lt;String, Vec&lt;String&gt;&gt; =</pre>
+<div class="footer">第 18 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>        std::collections::HashMap::new();
+    let head_branch = repo.head().ok().and_then(|h| h.shorthand().map(|s| s.to_string()));
+    for reference in refs.flatten() {
+        let name = match reference.name() {
+            Some(n) =&gt; n.to_string(),
+            None =&gt; continue,
+        };
+        if name == &quot;refs/stash&quot; || name.starts_with(&quot;refs/stash/&quot;) {
+            continue;
+        }
+        if let Ok(target) = reference.peel_to_commit() {
+            let display = prettify_ref(&amp;name, head_branch.as_deref());
+            ref_map.entry(target.id().to_string()).or_default().push(display);
+        }
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let mut lines = Vec::new();
+    for (i, oid_result) in walk.enumerate() {
+        if i &gt;= 200 {
+            break;
+        }
+        let oid = match oid_result {
+            Ok(o) =&gt; o,
+            Err(_) =&gt; continue,
+        };
+        let commit = match repo.find_commit(oid) {
+            Ok(c) =&gt; c,
+            Err(_) =&gt; continue,
+        };
+        let hash = oid.to_string();
+        let parents: Vec&lt;String&gt; = commit.parent_ids().map(|p| p.to_string()).collect();
+        let parent_str = parents.join(&quot; &quot;);
+        let subject = commit.summary().unwrap_or(&quot;&quot;).replace(&quot;~|~&quot;, &quot; &quot;);
+        let author = commit.author();
+        let author_name = author.name().unwrap_or(&quot;&quot;).replace(&quot;~|~&quot;, &quot; &quot;);
+        let author_email = author.email().unwrap_or(&quot;&quot;).replace(&quot;~|~&quot;, &quot; &quot;);
+        let commit_time = commit.time().seconds();
+        let ago = relative_time(now - commit_time);
+        let refs_display = ref_map
+            .get(&amp;hash)
+            .map(|v| {
+                let joined = v.join(&quot;, &quot;);
+                format!(&quot; ({})&quot;, joined)
+            })
+            .unwrap_or_default();
+        lines.push(format!(
+            &quot;{}~|~{}~|~{}~|~{}~|~{}~|~{}~|~{}&quot;,</pre>
+<div class="footer">第 19 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>            hash, parent_str, subject, author_name, ago, refs_display, author_email
+        ));
+    }
+    Ok(lines)
+}
+fn prettify_ref(name: &amp;str, head_branch: Option&lt;&amp;str&gt;) -&gt; String {
+    if name == &quot;HEAD&quot; {
+        return &quot;HEAD&quot;.to_string();
+    }
+    if let Some(branch) = name.strip_prefix(&quot;refs/heads/&quot;) {
+        if head_branch == Some(branch) {
+            return format!(&quot;HEAD -&gt; {}&quot;, branch);
+        }
+        return branch.to_string();
+    }
+    if let Some(remote) = name.strip_prefix(&quot;refs/remotes/&quot;) {
+        return remote.to_string();
+    }
+    if let Some(tag) = name.strip_prefix(&quot;refs/tags/&quot;) {
+        return format!(&quot;tag: {}&quot;, tag);
+    }
+    name.to_string()
+}
+fn relative_time(secs: i64) -&gt; String {
+    let secs = secs.max(0) as u64;
+    if secs &lt; 60 {
+        return &quot;just now&quot;.to_string();
+    }
+    let mins = secs / 60;
+    if mins &lt; 60 {
+        return format!(&quot;{} minute{} ago&quot;, mins, if mins == 1 { &quot;&quot; } else { &quot;s&quot; });
+    }
+    let hours = mins / 60;
+    if hours &lt; 24 {
+        return format!(&quot;{} hour{} ago&quot;, hours, if hours == 1 { &quot;&quot; } else { &quot;s&quot; });
+    }
+    let days = hours / 24;
+    if days &lt; 30 {
+        return format!(&quot;{} day{} ago&quot;, days, if days == 1 { &quot;&quot; } else { &quot;s&quot; });
+    }
+    let months = days / 30;
+    if months &lt; 12 {
+        return format!(&quot;{} month{} ago&quot;, months, if months == 1 { &quot;&quot; } else { &quot;s&quot; });
+    }
+    let years = months / 12;
+    format!(&quot;{} year{} ago&quot;, years, if years == 1 { &quot;&quot; } else { &quot;s&quot; })
+}
+#[tauri::command]
+pub async fn git_conflicted_files(path: String) -&gt; Result&lt;Vec&lt;String&gt;, String&gt; {
+    let repo = open(&amp;path)?;</pre>
+<div class="footer">第 20 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>    let index = repo.index().map_err(|e| e.to_string())?;
+    let mut files = Vec::new();
+    for entry in index.conflicts().map_err(|e| e.to_string())? {
+        let conflict = entry.map_err(|e| e.to_string())?;
+        let path_bytes = conflict
+            .ancestor
+            .as_ref()
+            .or(conflict.our.as_ref())
+            .or(conflict.their.as_ref())
+            .and_then(|e| std::str::from_utf8(&amp;e.path).ok().map(|s| s.to_string()));
+        if let Some(p) = path_bytes {
+            files.push(p);
+        }
+    }
+    Ok(files)
+}
+#[tauri::command]
+pub async fn read_file_content(path: String, file_path: String) -&gt; Result&lt;String, String&gt; {
+    let full_path = safe_join(&amp;path, &amp;file_path)?;
+    std::fs::read_to_string(full_path).map_err(|e| e.to_string())
+}
+#[tauri::command]
+pub async fn write_file_content(
+    path: String,
+    file_path: String,
+    content: String,
+) -&gt; Result&lt;(), String&gt; {
+    let full_path = safe_join(&amp;path, &amp;file_path)?;
+    std::fs::write(full_path, content).map_err(|e| e.to_string())
+}
+#[tauri::command]
+pub async fn git_add(path: String, file_path: String) -&gt; Result&lt;String, String&gt; {
+    let repo = open(&amp;path)?;
+    let mut index = repo.index().map_err(|e| e.to_string())?;
+    index.add_path(Path::new(&amp;file_path)).map_err(|e| e.to_string())?;
+    index.write().map_err(|e| e.to_string())?;
+    Ok(String::new())
+}
+#[tauri::command]
+pub async fn git_commit(path: String, message: String) -&gt; Result&lt;String, String&gt; {
+    let repo = open(&amp;path)?;
+    let sig = repo.signature().map_err(|e| e.to_string())?;
+    let mut index = repo.index().map_err(|e| e.to_string())?;
+    let tree_oid = index.write_tree().map_err(|e| e.to_string())?;
+    let tree = repo.find_tree(tree_oid).map_err(|e| e.to_string())?;
+    let parents: Vec&lt;git2::Commit&gt; = match repo.head() {
+        Ok(h) =&gt; h.peel_to_commit().ok().into_iter().collect(),
+        Err(e) if e.code() == git2::ErrorCode::UnbornBranch =&gt; vec![],
+        Err(e) =&gt; return Err(e.to_string()),
+    };</pre>
+<div class="footer">第 21 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>    let parent_refs: Vec&lt;&amp;git2::Commit&gt; = parents.iter().collect();
+    let oid = repo
+        .commit(Some(&quot;HEAD&quot;), &amp;sig, &amp;sig, &amp;message, &amp;tree, &amp;parent_refs)
+        .map_err(|e| e.to_string())?;
+    Ok(format!(&quot;Created commit {}&quot;, oid))
+}
+#[tauri::command]
+pub async fn git_stash(path: String) -&gt; Result&lt;String, String&gt; {
+    let mut repo = open(&amp;path)?;
+    let sig = repo.signature().map_err(|e| e.to_string())?;
+    let oid = repo
+        .stash_save(&amp;sig, &quot;WIP&quot;, Some(StashFlags::DEFAULT))
+        .map_err(|e| e.to_string())?;
+    Ok(format!(&quot;Stashed as {}&quot;, oid))
+}
+#[derive(serde::Serialize)]
+#[serde(rename_all = &quot;camelCase&quot;)]
+pub struct AutoStashResult {
+    stash_oid: Option&lt;String&gt;,
+    output: String,
+}
+#[tauri::command]
+pub async fn git_auto_stash(path: String) -&gt; Result&lt;AutoStashResult, String&gt; {
+    let mut repo = open(&amp;path)?;
+    let has_changes = {
+        let mut opts = git2::StatusOptions::new();
+        opts.include_untracked(false);
+        let statuses = repo.statuses(Some(&amp;mut opts)).map_err(|e| e.to_string())?;
+        statuses.iter().any(|e| !e.status().is_empty())
+    }; // `statuses` dropped here — &amp;repo borrow released
+    if !has_changes {
+        return Ok(AutoStashResult { stash_oid: None, output: &quot;Nothing to stash.&quot;.to_string() });
+    }
+    let sig = repo.signature().map_err(|e| e.to_string())?;
+    let oid = repo
+        .stash_save(&amp;sig, &quot;git-client auto stash&quot;, Some(StashFlags::DEFAULT))
+        .map_err(|e| e.to_string())?;
+    Ok(AutoStashResult {
+        stash_oid: Some(oid.to_string()),
+        output: format!(&quot;Auto stashed as {}&quot;, oid),
+    })
+}
+#[tauri::command]
+pub async fn git_stash_pop(path: String, stash_oid: Option&lt;String&gt;) -&gt; Result&lt;String, String&gt; {
+    let mut repo = open(&amp;path)?;
+    let index = if let Some(oid_str) = stash_oid.as_deref().filter(|s| !s.trim().is_empty()) {
+        find_stash_index_by_oid(&amp;mut repo, oid_str)?
+    } else {
+        Some(0)
+    };</pre>
+<div class="footer">第 22 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>    match index {
+        None =&gt; Ok(&quot;Auto stash already released.&quot;.to_string()),
+        Some(idx) =&gt; {
+            repo.stash_pop(idx, None).map_err(|e| e.to_string())?;
+            Ok(&quot;Stash popped.&quot;.to_string())
+        }
+    }
+}
+#[tauri::command]
+pub async fn git_stash_drop(path: String, stash_oid: String) -&gt; Result&lt;String, String&gt; {
+    let mut repo = open(&amp;path)?;
+    let index = find_stash_index_by_oid(&amp;mut repo, &amp;stash_oid)?;
+    match index {
+        None =&gt; Ok(&quot;Auto stash already released.&quot;.to_string()),
+        Some(idx) =&gt; {
+            repo.stash_drop(idx).map_err(|e| e.to_string())?;
+            Ok(&quot;Stash dropped.&quot;.to_string())
+        }
+    }
+}
+fn find_stash_index_by_oid(repo: &amp;mut Repository, oid_str: &amp;str) -&gt; Result&lt;Option&lt;usize&gt;, String&gt; {
+    let target = git2::Oid::from_str(oid_str).map_err(|e| e.to_string())?;
+    let mut found: Option&lt;usize&gt; = None;
+    repo.stash_foreach(|index, _msg, oid| {
+        if *oid == target {
+            found = Some(index);
+            false // stop iteration
+        } else {
+            true
+        }
+    })
+    .map_err(|e| e.to_string())?;
+    Ok(found)
+}
+#[tauri::command]
+pub async fn git_checkout_files(path: String, files: Vec&lt;String&gt;) -&gt; Result&lt;String, String&gt; {
+    let repo = open(&amp;path)?;
+    let mut checkout_opts = CheckoutBuilder::new();
+    for f in &amp;files {
+        checkout_opts.path(f);
+    }
+    checkout_opts.force();
+    repo.checkout_head(Some(&amp;mut checkout_opts))
+        .map_err(|e| e.to_string())?;
+    Ok(format!(&quot;Restored {} file(s).&quot;, files.len()))
+}
+#[tauri::command]
+pub async fn git_discard_file(path: String, file_path: String) -&gt; Result&lt;String, String&gt; {
+    let repo = open(&amp;path)?;
+    let mut status_opts = git2::StatusOptions::new();</pre>
+<div class="footer">第 23 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>    status_opts.pathspec(&amp;file_path);
+    let statuses = repo
+        .statuses(Some(&amp;mut status_opts))
+        .map_err(|e| e.to_string())?;
+    let is_untracked = statuses
+        .iter()
+        .any(|e| e.status().contains(git2::Status::WT_NEW));
+    if is_untracked {
+        let full = Path::new(&amp;path).join(&amp;file_path);
+        if full.is_dir() {
+            std::fs::remove_dir_all(&amp;full).map_err(|e| e.to_string())?;
+        } else {
+            std::fs::remove_file(&amp;full).map_err(|e| e.to_string())?;
+        }
+        return Ok(format!(&quot;Removed untracked &#x27;{}&#x27;.&quot;, file_path));
+    }
+    if let Ok(head) = repo.head().and_then(|h| h.peel_to_commit()) {
+        let tree = head.tree().map_err(|e| e.to_string())?;
+        repo.reset_default(Some(tree.as_object()), [file_path.as_str()])
+            .map_err(|e| e.to_string())?;
+    }
+    let mut checkout_opts = CheckoutBuilder::new();
+    checkout_opts.path(&amp;file_path).force();
+    repo.checkout_head(Some(&amp;mut checkout_opts))
+        .map_err(|e| e.to_string())?;
+    Ok(format!(&quot;Discarded changes in &#x27;{}&#x27;.&quot;, file_path))
+}
+#[tauri::command]
+pub async fn git_discard_all_changes(path: String) -&gt; Result&lt;String, String&gt; {
+    let repo = open(&amp;path)?;
+    let head = repo
+        .head()
+        .map_err(|e| e.to_string())?
+        .peel_to_commit()
+        .map_err(|e| e.to_string())?;
+    repo.reset(head.as_object(), ResetType::Hard, None)
+        .map_err(|e| e.to_string())?;
+    let mut status_opts = git2::StatusOptions::new();
+    status_opts.include_untracked(true).recurse_untracked_dirs(true);
+    let statuses = repo.statuses(Some(&amp;mut status_opts)).map_err(|e| e.to_string())?;
+    for entry in statuses.iter() {
+        if entry.status().contains(git2::Status::WT_NEW) {
+            if let Some(p) = entry.path() {
+                let full = Path::new(&amp;path).join(p);
+                if full.is_dir() {
+                    let _ = std::fs::remove_dir_all(&amp;full);
+                } else {
+                    let _ = std::fs::remove_file(&amp;full);
+                }
+            }</pre>
+<div class="footer">第 24 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>        }
+    }
+    Ok(&quot;Discarded all changes and removed untracked files.&quot;.to_string())
+}
+#[tauri::command]
+pub async fn git_reset_hard(path: String) -&gt; Result&lt;String, String&gt; {
+    let repo = open(&amp;path)?;
+    let head = repo
+        .head()
+        .map_err(|e| e.to_string())?
+        .peel_to_commit()
+        .map_err(|e| e.to_string())?;
+    repo.reset(head.as_object(), ResetType::Hard, None)
+        .map_err(|e| e.to_string())?;
+    Ok(&quot;Hard reset to HEAD.&quot;.to_string())
+}
+#[tauri::command]
+pub async fn open_in_editor(editor: String, file_path: String) -&gt; Result&lt;(), String&gt; {
+    let editor_trimmed = editor.trim();
+    if editor_trimmed.is_empty() {
+        return Err(&quot;Editor command is empty.&quot;.to_string());
+    }
+    if editor_trimmed.contains(|c: char| c == &#x27;;&#x27; || c == &#x27;|&#x27; || c == &#x27;&amp;&#x27; || c == &#x27;$&#x27;
+        || c == &#x27;`&#x27; || c == &#x27;(&#x27; || c == &#x27;)&#x27; || c == &#x27;{&#x27; || c == &#x27;}&#x27;
+        || c == &#x27;\n&#x27; || c == &#x27;\r&#x27;)
+    {
+        return Err(format!(
+            &quot;Invalid editor command &#x27;{}&#x27;: contains unsafe characters.&quot;, editor_trimmed
+        ));
+    }
+    if file_path.contains(&quot;\0&quot;) {
+        return Err(&quot;Invalid file path: contains null byte.&quot;.to_string());
+    }
+    #[cfg(target_os = &quot;windows&quot;)]
+    {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new(editor_trimmed)
+            .arg(&amp;file_path)
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .spawn()
+            .map_err(|e| format!(&quot;Failed to launch &#x27;{}&#x27;: {}&quot;, editor_trimmed, e))?;
+    }
+    #[cfg(not(target_os = &quot;windows&quot;))]
+    {
+        std::process::Command::new(editor_trimmed)
+            .arg(&amp;file_path)
+            .spawn()
+            .map_err(|e| format!(&quot;Failed to launch &#x27;{}&#x27;: {}&quot;, editor_trimmed, e))?;
+    }
+    Ok(())</pre>
+<div class="footer">第 25 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>}
+#[tauri::command]
+pub async fn git_clone(clone_url: String, dest_dir: String) -&gt; Result&lt;String, String&gt; {
+    let repo_name = clone_url
+        .trim_end_matches(&#x27;/&#x27;)
+        .rsplit(&#x27;/&#x27;)
+        .next()
+        .unwrap_or(&quot;repo&quot;)
+        .trim_end_matches(&quot;.git&quot;)
+        .rsplit(&#x27;@&#x27;)
+        .next()
+        .unwrap_or(&quot;repo&quot;)
+        .to_string();
+    let clean_name = repo_name
+        .split(&#x27;/&#x27;)
+        .next_back()
+        .unwrap_or(&amp;repo_name)
+        .to_string();
+    let target = Path::new(&amp;dest_dir).join(&amp;clean_name);
+    let target_str = target.to_string_lossy().to_string();
+    if is_ssh_url(&amp;clone_url) {
+        run_git_command(&amp;dest_dir, &amp;[&quot;clone&quot;, &amp;clone_url, &amp;clean_name])?;
+        return Ok(target_str);
+    }
+    let mut builder = git2::build::RepoBuilder::new();
+    builder.fetch_options(fetch_options());
+    builder.clone(&amp;clone_url, &amp;target).map_err(|e| e.to_string())?;
+    Ok(target_str)
+}
+#[tauri::command]
+pub async fn git_remote_url(path: String) -&gt; Result&lt;String, String&gt; {
+    let repo = open(&amp;path)?;
+    let remote = repo.find_remote(&quot;origin&quot;).map_err(|e| e.to_string())?;
+    Ok(remote.url().unwrap_or(&quot;&quot;).to_string())
+}
+#[tauri::command]
+pub async fn git_add_all(path: String) -&gt; Result&lt;String, String&gt; {
+    let repo = open(&amp;path)?;
+    let mut index = repo.index().map_err(|e| e.to_string())?;
+    index.add_all([&quot;*&quot;].iter(), git2::IndexAddOption::DEFAULT, None).map_err(|e| e.to_string())?;
+    index.write().map_err(|e| e.to_string())?;
+    Ok(String::new())
+}
+#[tauri::command]
+pub async fn git_add_files(path: String, files: Vec&lt;String&gt;) -&gt; Result&lt;String, String&gt; {
+    let repo = open(&amp;path)?;
+    let mut index = repo.index().map_err(|e| e.to_string())?;
+    for file in &amp;files {
+        index.add_path(Path::new(file)).map_err(|e| format!(&quot;Failed to stage {}: {}&quot;, file, e))?;
+    }</pre>
+<div class="footer">第 26 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>    index.write().map_err(|e| e.to_string())?;
+    Ok(String::new())
+}
+fn collect_diffs_for_files(repo_path: &amp;str, files: &amp;[String], max_chars: usize) -&gt; Result&lt;String, String&gt; {
+    let repo = open(repo_path)?;
+    let statuses = repo.statuses(None).map_err(|e| e.to_string())?;
+    let file_set: std::collections::HashSet&lt;&amp;str&gt; = files.iter().map(|s| s.as_str()).collect();
+    let mut combined = String::new();
+    let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+    for entry in statuses.iter() {
+        let s = entry.status();
+        if s.is_empty() || s.contains(git2::Status::IGNORED) { continue; }
+        let Some(path) = entry.path() else { continue };
+        if !file_set.contains(path) { continue; }
+        let mut file_diff = String::new();
+        if s.contains(git2::Status::WT_NEW) {
+            let full_path = std::path::Path::new(repo_path).join(path);
+            if let Ok(content) = std::fs::read_to_string(&amp;full_path) {
+                if content.is_ascii() || content.chars().all(|c| !c.is_control() || c == &#x27;\n&#x27; || c == &#x27;\r&#x27; || c == &#x27;\t&#x27;) {
+                    file_diff.push_str(&amp;format!(&quot;+++ b/{}\n&quot;, path));
+                    for line in content.lines().take(200) {
+                        file_diff.push(&#x27;+&#x27;);
+                        file_diff.push_str(line);
+                        file_diff.push(&#x27;\n&#x27;);
+                    }
+                }
+            }
+        } else {
+            let mut opts = DiffOptions::new();
+            opts.pathspec(path);
+            if let Ok(d) = repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&amp;mut opts)) {
+                let _ = d.print(DiffFormat::Patch, |_delta, _hunk, line| {
+                    file_diff.push_str(std::str::from_utf8(line.content()).unwrap_or(&quot;&quot;));
+                    true
+                });
+            }
+            let mut opts2 = DiffOptions::new();
+            opts2.pathspec(path);
+            if let Ok(d) = repo.diff_index_to_workdir(None, Some(&amp;mut opts2)) {
+                let _ = d.print(DiffFormat::Patch, |_delta, _hunk, line| {
+                    file_diff.push_str(std::str::from_utf8(line.content()).unwrap_or(&quot;&quot;));
+                    true
+                });
+            }
+        }
+        if !file_diff.trim().is_empty() {
+            combined.push_str(&amp;format!(&quot;--- {} ---\n{}\n&quot;, path, file_diff));
+            if combined.len() &gt; max_chars {
+                combined.truncate(max_chars);
+                combined.push_str(&quot;\n... [truncated]&quot;);</pre>
+<div class="footer">第 27 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>                break;
+            }
+        }
+    }
+    Ok(combined)
+}
+#[tauri::command]
+pub async fn ai_generate_commit_for_files(
+    path: String,
+    files: Vec&lt;String&gt;,
+    config: AiConfig,
+) -&gt; Result&lt;String, String&gt; {
+    let diffs = collect_diffs_for_files(&amp;path, &amp;files, 12_000)?;
+    if diffs.trim().is_empty() {
+        return Err(&quot;No changes to describe.&quot;.into());
+    }
+    let lang = lang_instruction(config.language.as_deref());
+    let prompt = format!(
+        &quot;You are a commit-message generator. Based on the following git diff, produce a single concise commit message following the Conventional Commits spec (type: short description). Reply with ONLY the commit message, no explanation, no quotes, no markdown.{lang}\n\nDiff:\n{}&quot;,
+        diffs
+    );
+    let body = ChatRequest {
+        model: &amp;config.model,
+        messages: vec![
+            ChatMessage { role: &quot;system&quot;, content: &quot;You generate concise git commit messages.&quot; },
+            ChatMessage { role: &quot;user&quot;, content: &amp;prompt },
+        ],
+        max_tokens: 120,
+        temperature: 0.3,
+    };
+    let url = format!(&quot;{}/chat/completions&quot;, config.endpoint.trim_end_matches(&#x27;/&#x27;));
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&amp;url)
+        .header(&quot;Authorization&quot;, format!(&quot;Bearer {}&quot;, config.api_key))
+        .header(&quot;Content-Type&quot;, &quot;application/json&quot;)
+        .json(&amp;body)
+        .send()
+        .await
+        .map_err(|e| format!(&quot;Network error: {}&quot;, e))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!(&quot;AI API error ({}): {}&quot;, status, text));
+    }
+    let data: ChatResponse = resp.json().await.map_err(|e| format!(&quot;Parse error: {}&quot;, e))?;
+    let msg = data
+        .choices
+        .and_then(|c| c.into_iter().next())
+        .and_then(|c| c.message)</pre>
+<div class="footer">第 28 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>        .and_then(|m| m.content)
+        .unwrap_or_default();
+    Ok(msg.trim().to_string())
+}
+#[tauri::command]
+pub async fn ai_generate_commit_local_for_files(
+    path: String,
+    files: Vec&lt;String&gt;,
+    model_name: String,
+    language: Option&lt;String&gt;,
+) -&gt; Result&lt;String, String&gt; {
+    let diffs = collect_diffs_for_files(&amp;path, &amp;files, 12_000)?;
+    if diffs.trim().is_empty() {
+        return Err(&quot;No changes to describe.&quot;.into());
+    }
+    let lang = lang_instruction(language.as_deref());
+    tokio::task::spawn_blocking(move || crate::local_ai::generate_commit_message(&amp;diffs, &amp;model_name, &amp;lang))
+        .await
+        .map_err(|e| format!(&quot;Task failed: {}&quot;, e))?
+}
+fn collect_diffs(repo_path: &amp;str, max_chars: usize) -&gt; Result&lt;String, String&gt; {
+    let repo = open(repo_path)?;
+    let statuses = repo.statuses(None).map_err(|e| e.to_string())?;
+    let mut combined = String::new();
+    let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+    for entry in statuses.iter() {
+        let s = entry.status();
+        if s.is_empty() || s.contains(git2::Status::IGNORED) {
+            continue;
+        }
+        let Some(path) = entry.path() else { continue };
+        let mut file_diff = String::new();
+        if s.contains(git2::Status::WT_NEW) {
+            let full_path = std::path::Path::new(repo_path).join(path);
+            if let Ok(content) = std::fs::read_to_string(&amp;full_path) {
+                if content.is_ascii() || content.chars().all(|c| !c.is_control() || c == &#x27;\n&#x27; || c == &#x27;\r&#x27; || c == &#x27;\t&#x27;) {
+                    file_diff.push_str(&amp;format!(&quot;+++ b/{}\n&quot;, path));
+                    for line in content.lines().take(200) {
+                        file_diff.push(&#x27;+&#x27;);
+                        file_diff.push_str(line);
+                        file_diff.push(&#x27;\n&#x27;);
+                    }
+                }
+            }
+        } else {
+            let mut opts = DiffOptions::new();
+            opts.pathspec(path);
+            if let Ok(d) = repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&amp;mut opts)) {
+                let _ = d.print(DiffFormat::Patch, |_delta, _hunk, line| {
+                    file_diff.push_str(std::str::from_utf8(line.content()).unwrap_or(&quot;&quot;));</pre>
+<div class="footer">第 29 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>                    true
+                });
+            }
+            let mut opts2 = DiffOptions::new();
+            opts2.pathspec(path);
+            if let Ok(d) = repo.diff_index_to_workdir(None, Some(&amp;mut opts2)) {
+                let _ = d.print(DiffFormat::Patch, |_delta, _hunk, line| {
+                    file_diff.push_str(std::str::from_utf8(line.content()).unwrap_or(&quot;&quot;));
+                    true
+                });
+            }
+        }
+        if !file_diff.trim().is_empty() {
+            combined.push_str(&amp;format!(&quot;--- {} ---\n{}\n&quot;, path, file_diff));
+            if combined.len() &gt; max_chars {
+                combined.truncate(max_chars);
+                combined.push_str(&quot;\n... [truncated]&quot;);
+                break;
+            }
+        }
+    }
+    Ok(combined)
+}
+#[derive(serde::Deserialize)]
+pub struct AiConfig {
+    pub endpoint: String,
+    pub api_key: String,
+    pub model: String,
+    pub language: Option&lt;String&gt;,
+}
+fn lang_instruction(language: Option&lt;&amp;str&gt;) -&gt; String {
+    match language.unwrap_or(&quot;en&quot;) {
+        &quot;zh-CN&quot; =&gt; &quot; Write the commit message in Simplified Chinese (简体中文).&quot;.to_string(),
+        &quot;zh-TW&quot; =&gt; &quot; Write the commit message in Traditional Chinese (繁體中文).&quot;.to_string(),
+        _ =&gt; String::new(), // default: English, no extra instruction needed
+    }
+}
+#[derive(serde::Serialize)]
+struct ChatMessage&lt;&#x27;a&gt; {
+    role: &amp;&#x27;a str,
+    content: &amp;&#x27;a str,
+}
+#[derive(serde::Serialize)]
+struct ChatRequest&lt;&#x27;a&gt; {
+    model: &amp;&#x27;a str,
+    messages: Vec&lt;ChatMessage&lt;&#x27;a&gt;&gt;,
+    max_tokens: u32,
+    temperature: f32,
+}
+#[derive(serde::Deserialize)]</pre>
+<div class="footer">第 30 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>  }
+  async function handleTokenVerify() {
+    if (!token.trim()) { setError(t.personalAccessToken); return; }
+    setLoading(true); setError(null);
+    try {
+      const draft: GitProvider = {
+        id: `${kind}-${Date.now()}`,
+        kind, host: host.trim() || meta.defaultHost,
+        label: label.trim() || meta.label,
+        token: token.trim(),
+      };
+      const verified = await verifyProvider(draft);
+      verified.label = label.trim() || `${meta.label} (${verified.username})`;
+      onAdd(verified);
+      resetForm();
+    } catch (e) {
+      setError(String(e).replace(&quot;Error: &quot;, &quot;&quot;));
+    } finally {
+      setLoading(false);
+    }
+  }
+  async function handleOAuthStart() {
+    setOauthWaiting(true); setError(null);
+    try {
+      const result = await invoke&lt;OAuthResult&gt;(&quot;oauth_start&quot;, {
+        args: {
+          kind,
+          host: host.trim() || meta.defaultHost,
+        },
+      });
+      const resolvedHost = host.trim() || meta.defaultHost;
+      const p: GitProvider = {
+        id:        `${kind}-${Date.now()}`,
+        kind,
+        host:      resolvedHost,
+        label:     label.trim() || `${meta.label} (${result.username})`,
+        token:     result.accessToken,
+        oauth:     true,
+        username:  result.username,
+        avatarUrl: result.avatarUrl,
+        name:      result.name,
+      };
+      onAdd(p);
+      resetForm();
+    } catch (e) {
+      setError(String(e).replace(&quot;Error: &quot;, &quot;&quot;));
+    } finally {
+      setOauthWaiting(false);
+    }
+  }</pre>
+<div class="footer">第 31 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>  return (
+    &lt;div className=&quot;provider-add-form&quot;&gt;
+      &lt;div className=&quot;provider-add-title&quot;&gt;{t.addAccount}&lt;/div&gt;
+      {}
+      &lt;div className=&quot;provider-kind-row&quot;&gt;
+        {([&quot;github&quot;, &quot;gitlab&quot;, &quot;gitee&quot;] as ProviderKind[]).map(k =&gt; (
+          &lt;button key={k} onClick={() =&gt; handleKindChange(k)}
+            className={`provider-kind-btn ${kind === k ? &quot;provider-kind-btn-active&quot; : &quot;&quot;}`}&gt;
+            &lt;ProviderIcon kind={k} size={14} /&gt;
+            {PROVIDER_META[k].label}
+          &lt;/button&gt;
+        ))}
+      &lt;/div&gt;
+      {}
+      &lt;div className=&quot;provider-auth-tabs&quot;&gt;
+        {oauthSupported &amp;&amp; (
+          &lt;button
+            onClick={() =&gt; { setAuthMode(&quot;oauth&quot;); setError(null); }}
+            className={`provider-auth-tab ${authMode === &quot;oauth&quot; ? &quot;provider-auth-tab-active&quot; : &quot;&quot;}`}
+          &gt;
+            &lt;Fingerprint size={13} /&gt;
+            {t.signInWith(meta.label)}
+          &lt;/button&gt;
+        )}
+        &lt;button
+          onClick={() =&gt; { setAuthMode(&quot;token&quot;); setError(null); }}
+          className={`provider-auth-tab ${authMode === &quot;token&quot; ? &quot;provider-auth-tab-active&quot; : &quot;&quot;}`}
+        &gt;
+          &lt;KeyRound size={13} /&gt;
+          {t.accessToken}
+        &lt;/button&gt;
+      &lt;/div&gt;
+      {}
+      {kind === &quot;gitlab&quot; &amp;&amp; (
+        &lt;div className=&quot;provider-field&quot;&gt;
+          &lt;label className=&quot;provider-field-label&quot;&gt;{t.host}&lt;/label&gt;
+          &lt;div className=&quot;provider-input-wrap&quot;&gt;
+            &lt;Globe size={13} className=&quot;provider-input-icon&quot; /&gt;
+            &lt;input className=&quot;provider-input provider-input-with-icon&quot;
+              placeholder=&quot;gitlab.com&quot; value={host}
+              onChange={e =&gt; setHost(e.target.value)} /&gt;
+          &lt;/div&gt;
+        &lt;/div&gt;
+      )}
+      {}
+      &lt;div className=&quot;provider-field&quot;&gt;
+        &lt;label className=&quot;provider-field-label&quot;&gt;
+          {t.label} &lt;span className=&quot;provider-field-hint&quot;&gt;({t.optional})&lt;/span&gt;
+        &lt;/label&gt;
+        &lt;input className=&quot;provider-input&quot;</pre>
+<div class="footer">第 32 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>          placeholder={`e.g. ${meta.label} (work)`}
+          value={label} onChange={e =&gt; setLabel(e.target.value)} /&gt;
+      &lt;/div&gt;
+      {}
+      {authMode === &quot;oauth&quot; &amp;&amp; oauthSupported &amp;&amp; (
+        &lt;&gt;
+          &lt;div className=&quot;provider-oauth-hint&quot;&gt;
+            {t.oauthHint}
+          &lt;/div&gt;
+          {error &amp;&amp; &lt;div className=&quot;provider-error&quot;&gt;{error}&lt;/div&gt;}
+          {oauthWaiting &amp;&amp; (
+            &lt;div className=&quot;provider-oauth-waiting&quot;&gt;
+              &lt;RefreshCw size={14} className=&quot;animate-spin&quot; /&gt;
+              &lt;span&gt;{t.oauthWaiting}&lt;/span&gt;
+            &lt;/div&gt;
+          )}
+          &lt;button onClick={handleOAuthStart}
+            disabled={oauthWaiting}
+            className=&quot;provider-verify-btn provider-oauth-btn&quot;
+            style={{ background: meta.color }}&gt;
+            {oauthWaiting
+              ? &lt;&gt;&lt;RefreshCw size={13} className=&quot;animate-spin&quot; /&gt; {t.waitingForBrowser}&lt;/&gt;
+              : &lt;&gt;&lt;ProviderIcon kind={kind} size={14} /&gt; {t.signInWith(meta.label)}&lt;/&gt;}
+          &lt;/button&gt;
+        &lt;/&gt;
+      )}
+      {}
+      {authMode === &quot;token&quot; &amp;&amp; (
+        &lt;&gt;
+          &lt;div className=&quot;provider-field&quot;&gt;
+            &lt;label className=&quot;provider-field-label&quot;&gt;
+              {t.personalAccessToken}
+              &lt;a href={meta.tokenUrl} target=&quot;_blank&quot; rel=&quot;noreferrer&quot;
+                className=&quot;provider-token-link&quot; title={t.generateToken}&gt;
+                &lt;ExternalLink size={11} /&gt; {t.generateToken}
+              &lt;/a&gt;
+            &lt;/label&gt;
+            &lt;div className=&quot;provider-input-wrap&quot;&gt;
+              &lt;Lock size={13} className=&quot;provider-input-icon&quot; /&gt;
+              &lt;input
+                className=&quot;provider-input provider-input-with-icon&quot;
+                type={showToken ? &quot;text&quot; : &quot;password&quot;}
+                placeholder=&quot;ghp_xxxxxxxxxxxxxxxxxxxx&quot;
+                value={token}
+                onChange={e =&gt; setToken(e.target.value)}
+                onKeyDown={e =&gt; e.key === &quot;Enter&quot; &amp;&amp; handleTokenVerify()}
+              /&gt;
+              &lt;button type=&quot;button&quot; className=&quot;provider-show-token-btn&quot;
+                onClick={() =&gt; setShowToken(v =&gt; !v)} tabIndex={-1}&gt;
+                {showToken ? t.hide : t.show}</pre>
+<div class="footer">第 33 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>              &lt;/button&gt;
+            &lt;/div&gt;
+          &lt;/div&gt;
+          {error &amp;&amp; &lt;div className=&quot;provider-error&quot;&gt;{error}&lt;/div&gt;}
+          &lt;button onClick={handleTokenVerify}
+            disabled={loading || !token.trim()}
+            className=&quot;provider-verify-btn&quot;&gt;
+            {loading
+              ? &lt;&gt;&lt;RefreshCw size={13} className=&quot;animate-spin&quot; /&gt; {t.verifying}&lt;/&gt;
+              : &lt;&gt;&lt;Check size={13} /&gt; {t.verifyAndAdd}&lt;/&gt;}
+          &lt;/button&gt;
+        &lt;/&gt;
+      )}
+    &lt;/div&gt;
+  );
+}
+function ProviderCard({ provider, onRemove }: { provider: GitProvider; onRemove: () =&gt; void }) {
+  const t = useT();
+  const meta = PROVIDER_META[provider.kind];
+  return (
+    &lt;div className=&quot;provider-card&quot;&gt;
+      &lt;div className=&quot;provider-card-avatar&quot;&gt;
+        {provider.avatarUrl
+          ? &lt;img src={provider.avatarUrl} alt={provider.username} className=&quot;provider-avatar-img&quot; /&gt;
+          : &lt;ProviderIcon kind={provider.kind} size={20} /&gt;}
+        &lt;div className=&quot;provider-card-badge&quot; style={{ background: meta.color }} title={meta.label}&gt;
+          &lt;ProviderIcon kind={provider.kind} size={9} /&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div className=&quot;provider-card-info&quot;&gt;
+        &lt;div className=&quot;provider-card-name&quot;&gt;{provider.label}&lt;/div&gt;
+        &lt;div className=&quot;provider-card-sub&quot;&gt;
+          &lt;span className=&quot;provider-card-username&quot;&gt;@{provider.username}&lt;/span&gt;
+          &lt;span className=&quot;provider-card-dot&quot;&gt;·&lt;/span&gt;
+          &lt;span className=&quot;provider-card-host&quot;&gt;{provider.host}&lt;/span&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;button onClick={onRemove} className=&quot;provider-card-remove&quot;
+        aria-label={t.removeAccount} title={t.removeAccount}&gt;
+        &lt;Trash2 size={13} /&gt;
+      &lt;/button&gt;
+    &lt;/div&gt;
+  );
+}
+export function ProvidersModal({ isOpen, onClose, providers, onProvidersChange }: Props) {
+  const t = useT();
+  function handleAdd(p: GitProvider) {
+    const next = [...providers, p];
+    saveProviders(next);
+    onProvidersChange(next);</pre>
+<div class="footer">第 34 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>  }
+  function handleRemove(id: string) {
+    const next = providers.filter(p =&gt; p.id !== id);
+    saveProviders(next);
+    onProvidersChange(next);
+  }
+  return (
+    &lt;Modal isOpen={isOpen} onOpenChange={open =&gt; !open &amp;&amp; onClose()}&gt;
+      &lt;Modal.Backdrop&gt;
+        &lt;Modal.Container placement=&quot;center&quot;&gt;
+          &lt;Modal.Dialog className=&quot;app-modal providers-modal&quot;&gt;
+            &lt;Modal.CloseTrigger /&gt;
+            &lt;Modal.Header&gt;&lt;Modal.Heading&gt;{t.gitAccountsTitle}&lt;/Modal.Heading&gt;&lt;/Modal.Header&gt;
+            &lt;Modal.Body className=&quot;providers-modal-body&quot;&gt;
+              {providers.length &gt; 0 &amp;&amp; (
+                &lt;div className=&quot;provider-section&quot;&gt;
+                  &lt;div className=&quot;provider-section-title&quot;&gt;{t.connectedAccounts}&lt;/div&gt;
+                  &lt;div className=&quot;provider-cards&quot;&gt;
+                    {providers.map(p =&gt; (
+                      &lt;ProviderCard key={p.id} provider={p} onRemove={() =&gt; handleRemove(p.id)} /&gt;
+                    ))}
+                  &lt;/div&gt;
+                &lt;/div&gt;
+              )}
+              {providers.length === 0 &amp;&amp; (
+                &lt;div className=&quot;provider-empty&quot;&gt;
+                  &lt;div className=&quot;provider-empty-icons&quot;&gt;
+                    &lt;GithubIcon size={22} /&gt;&lt;GitlabIcon size={22} /&gt;&lt;GiteeIcon size={22} /&gt;
+                  &lt;/div&gt;
+                  &lt;p className=&quot;provider-empty-text&quot;&gt;{t.noAccountsYet}&lt;/p&gt;
+                  &lt;p className=&quot;provider-empty-hint&quot;&gt;{t.noAccountsHint}&lt;/p&gt;
+                &lt;/div&gt;
+              )}
+              &lt;AddProviderForm onAdd={handleAdd} /&gt;
+            &lt;/Modal.Body&gt;
+          &lt;/Modal.Dialog&gt;
+        &lt;/Modal.Container&gt;
+      &lt;/Modal.Backdrop&gt;
+    &lt;/Modal&gt;
+  );
+}
+import React, { useMemo, useRef, useEffect, useState } from &quot;react&quot;;
+import { useT } from &quot;../i18n&quot;;
+interface GitGraphViewerProps {
+  logs: string[];
+  headOid: string;
+  headBranch: string;
+}
+interface Commit {
+  hash: string;</pre>
+<div class="footer">第 35 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>  parents: string[];
+  subject: string;
+  author: string;
+  email: string;
+  date: string;
+  refs: string;
+}
+interface CommitRow extends Commit {
+  col: number;
+  color: string;
+  lanesAfter: (string | null)[];
+  laneColors: string[];
+}
+const COLORS = [
+  &quot;#0A84FF&quot;, &quot;#30D158&quot;, &quot;#FF9F0A&quot;, &quot;#BF5AF2&quot;,
+  &quot;#FF375F&quot;, &quot;#64D2FF&quot;, &quot;#FF6B35&quot;, &quot;#FF2D55&quot;,
+];
+const ROW_H = 48;
+const COL_W = 20;
+const DOT_R = 4;
+const HASH_W = 72;
+const AUTHOR_W = 180;
+const REFS_W = 220;
+function parseLog(logs: string[]): Commit[] {
+  return logs.flatMap(line =&gt; {
+    const parts = line.split(&quot;~|~&quot;);
+    if (parts.length &lt; 4) return [];
+    return [{
+      hash:    parts[0].trim(),
+      parents: parts[1].trim() ? parts[1].trim().split(&quot; &quot;) : [],
+      subject: parts[2].trim() || &quot;(no message)&quot;,
+      author:  parts[3].trim() || &quot;Unknown&quot;,
+      date:    parts[4]?.trim() ?? &quot;&quot;,
+      refs:    parts[5]?.trim() ?? &quot;&quot;,
+      email:   parts[6]?.trim() ?? &quot;&quot;,
+    }];
+  });
+}
+function stringToColor(str: string): string {
+  let hash = 0;
+  for (let i = 0; i &lt; str.length; i++) hash = str.charCodeAt(i) + ((hash &lt;&lt; 5) - hash);
+  const h = Math.abs(hash) % 360;
+  return `hsl(${h}, 52%, 44%)`;
+}
+function AuthorAvatar({ name, email, size = 26 }: { name: string; email: string; size?: number }) {
+  const initials = name.split(&quot; &quot;).map((w: string) =&gt; w[0]).join(&quot;&quot;).slice(0, 2).toUpperCase() || &quot;?&quot;;
+  const bg = stringToColor(email || name);
+  return (
+    &lt;div style={{
+      width: size, height: size, borderRadius: &quot;50%&quot;,</pre>
+<div class="footer">第 36 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>      background: bg, color: &quot;#fff&quot;,
+      display: &quot;flex&quot;, alignItems: &quot;center&quot;, justifyContent: &quot;center&quot;,
+      fontSize: size * 0.37, fontWeight: 700, flexShrink: 0,
+      letterSpacing: 0,
+      boxShadow: `0 1px 3px ${bg}55`,
+    }}&gt;
+      {initials}
+    &lt;/div&gt;
+  );
+}
+function layoutCommits(commits: Commit[]): CommitRow[] {
+  const lanes: (string | null)[] = [];
+  const laneColors: string[] = [];
+  const rows: CommitRow[] = [];
+  function findOrAlloc(hash: string): number {
+    let col = lanes.indexOf(hash);
+    if (col !== -1) return col;
+    col = lanes.indexOf(null);
+    if (col === -1) col = lanes.length;
+    lanes[col] = hash;
+    laneColors[col] = COLORS[col % COLORS.length];
+    return col;
+  }
+  for (const commit of commits) {
+    let col = lanes.indexOf(commit.hash);
+    if (col === -1) {
+      col = lanes.indexOf(null);
+      if (col === -1) col = lanes.length;
+      laneColors[col] = COLORS[col % COLORS.length];
+    }
+    const color = laneColors[col];
+    lanes[col] = null;
+    if (commit.parents.length === 0) {
+    } else if (commit.parents.length === 1) {
+      const p = commit.parents[0];
+      if (lanes.indexOf(p) === -1) lanes[col] = p;
+    } else {
+      const [first, ...rest] = commit.parents;
+      if (lanes.indexOf(first) === -1) lanes[col] = first;
+      for (const p of rest) {
+        if (lanes.indexOf(p) === -1) findOrAlloc(p);
+      }
+    }
+    rows.push({ ...commit, col, color, lanesAfter: [...lanes], laneColors: [...laneColors] });
+  }
+  return rows;
+}
+function parseRefs(refs: string) {
+  if (!refs) return { branches: [], tags: [], head: false, headBranch: &quot;&quot; };
+  const cleaned = refs.replace(/^\(|\)$/g, &quot;&quot;);</pre>
+<div class="footer">第 37 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>  const parts = cleaned.split(&quot;,&quot;).map(s =&gt; s.trim()).filter(Boolean);
+  const branches: string[] = [];
+  const tags: string[] = [];
+  let head = false;
+  let headBranch = &quot;&quot;;
+  for (const p of parts) {
+    if (p === &quot;HEAD&quot;) { head = true; continue; }
+    if (p.startsWith(&quot;HEAD -&gt; &quot;)) { head = true; headBranch = p.slice(8); branches.push(headBranch); continue; }
+    if (p.startsWith(&quot;tag: &quot;)) { tags.push(p.slice(5)); continue; }
+    if (p === &quot;origin/HEAD&quot; || p.endsWith(&quot;/HEAD&quot;)) continue;
+    branches.push(p);
+  }
+  return { branches, tags, head, headBranch };
+}
+function useDark() {
+  const [dark, setDark] = useState(() =&gt;
+    document.documentElement.getAttribute(&quot;data-theme&quot;) === &quot;dark&quot;
+  );
+  useEffect(() =&gt; {
+    const obs = new MutationObserver(() =&gt; {
+      setDark(document.documentElement.getAttribute(&quot;data-theme&quot;) === &quot;dark&quot;);
+    });
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: [&quot;data-theme&quot;] });
+    return () =&gt; obs.disconnect();
+  }, []);
+  return dark;
+}
+export function GitGraphViewer({ logs, headOid, headBranch }: GitGraphViewerProps) {
+  const t = useT();
+  const containerRef = useRef&lt;HTMLDivElement&gt;(null);
+  const dark = useDark();
+  const c = useMemo(() =&gt; dark ? {
+    headerBg:        &quot;rgba(18, 24, 32, 0.98)&quot;,
+    headerBorder:    &quot;rgba(255,255,255,0.07)&quot;,
+    headerText:      &quot;#4e6070&quot;,
+    rowBorder:       &quot;rgba(255,255,255,0.05)&quot;,
+    rowEven:         &quot;rgba(255,255,255,0.03)&quot;,
+    rowHead:         &quot;rgba(10,132,255,0.10)&quot;,
+    rowHover:        &quot;rgba(10,132,255,0.13)&quot;,
+    dotInner:        &quot;#1a2130&quot;,
+    authorName:      &quot;#c8d8e8&quot;,
+    authorDate:      &quot;#4e6070&quot;,
+    subjectDefault:  &quot;#b8c8d8&quot;,
+    subjectHead:     &quot;#7dc4ff&quot;,
+    hashBadgeBorder: (col: string) =&gt; `${col}35`,
+    hashBadgeBg:     (col: string) =&gt; `${col}20`,
+    headBadgeBg:     &quot;#0d1825&quot;,
+    headBadgeColor:  &quot;#e2ecf8&quot;,
+    branchBg:        &quot;rgba(10,132,255,0.18)&quot;,
+    branchColor:     &quot;#5aadff&quot;,</pre>
+<div class="footer">第 38 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>    branchBorder:    &quot;rgba(10,132,255,0.32)&quot;,
+    tagBg:           &quot;rgba(234,179,8,0.16)&quot;,
+    tagColor:        &quot;#f0b940&quot;,
+    tagBorder:       &quot;rgba(234,179,8,0.30)&quot;,
+  } : {
+    headerBg:        &quot;rgba(248,250,252,0.96)&quot;,
+    headerBorder:    &quot;rgba(21,32,43,0.08)&quot;,
+    headerText:      &quot;#93a3b4&quot;,
+    rowBorder:       &quot;rgba(21,32,43,0.05)&quot;,
+    rowEven:         &quot;rgba(255,255,255,0.22)&quot;,
+    rowHead:         &quot;rgba(10,132,255,0.05)&quot;,
+    rowHover:        &quot;rgba(10,132,255,0.07)&quot;,
+    dotInner:        &quot;white&quot;,
+    authorName:      &quot;#1e2a35&quot;,
+    authorDate:      &quot;#97aabb&quot;,
+    subjectDefault:  &quot;#1e2a35&quot;,
+    subjectHead:     &quot;#0a3d8f&quot;,
+    hashBadgeBorder: (col: string) =&gt; `${col}25`,
+    hashBadgeBg:     (col: string) =&gt; `${col}15`,
+    headBadgeBg:     &quot;#1a2330&quot;,
+    headBadgeColor:  &quot;#fff&quot;,
+    branchBg:        &quot;rgba(10,132,255,0.10)&quot;,
+    branchColor:     &quot;#0a5eb6&quot;,
+    branchBorder:    &quot;rgba(10,132,255,0.20)&quot;,
+    tagBg:           &quot;rgba(234,179,8,0.11)&quot;,
+    tagColor:        &quot;#92560a&quot;,
+    tagBorder:       &quot;rgba(234,179,8,0.26)&quot;,
+  }, [dark]);
+  const rows = useMemo(() =&gt; {
+    if (!logs || logs.length === 0) return [];
+    return layoutCommits(parseLog(logs));
+  }, [logs]);
+  if (rows.length === 0) {
+    return (
+      &lt;div style={{ display: &quot;flex&quot;, alignItems: &quot;center&quot;, justifyContent: &quot;center&quot;, height: &quot;100%&quot;, color: c.authorDate, fontSize: &quot;0.88rem&quot; }}&gt;
+        {t.graphNoHistory}
+      &lt;/div&gt;
+    );
+  }
+  const maxCol = Math.max(...rows.map(r =&gt; Math.max(r.col, ...r.lanesAfter.map((_, i) =&gt; i))));
+  const totalCols = maxCol + 1;
+  const graphW = totalCols * COL_W + 12;
+  const totalH = rows.length * ROW_H;
+  const COL_HEADER: React.CSSProperties = {
+    fontSize: &quot;0.67rem&quot;, fontWeight: 750,
+    textTransform: &quot;uppercase&quot; as const,
+    letterSpacing: &quot;0.05em&quot;,
+    color: c.headerText,
+  };
+  return (</pre>
+<div class="footer">第 39 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>    &lt;div ref={containerRef} style={{ height: &quot;100%&quot;, display: &quot;flex&quot;, flexDirection: &quot;column&quot;, overflow: &quot;hidden&quot; }}&gt;
+      {}
+      &lt;div style={{
+        display: &quot;flex&quot;, alignItems: &quot;center&quot;, height: 30, flexShrink: 0,
+        background: c.headerBg,
+        borderBottom: `1px solid ${c.headerBorder}`,
+        position: &quot;sticky&quot;, top: 0, zIndex: 10, userSelect: &quot;none&quot;,
+      }}&gt;
+        &lt;div style={{ width: graphW, flexShrink: 0 }} /&gt;
+        &lt;div style={{ width: HASH_W, paddingLeft: 6, flexShrink: 0 }}&gt;&lt;span style={COL_HEADER}&gt;{t.graphColHash}&lt;/span&gt;&lt;/div&gt;
+        &lt;div style={{ width: AUTHOR_W, flexShrink: 0 }}&gt;&lt;span style={COL_HEADER}&gt;{t.graphColAuthor}&lt;/span&gt;&lt;/div&gt;
+        &lt;div style={{ width: REFS_W, flexShrink: 0 }}&gt;&lt;span style={COL_HEADER}&gt;{t.graphColRefs}&lt;/span&gt;&lt;/div&gt;
+        &lt;div style={{ flex: 1, minWidth: 0, paddingRight: 16 }}&gt;&lt;span style={COL_HEADER}&gt;{t.graphColSubject}&lt;/span&gt;&lt;/div&gt;
+      &lt;/div&gt;
+      {}
+      &lt;div style={{ flex: 1, overflowY: &quot;auto&quot;, overflowX: &quot;hidden&quot; }}&gt;
+        &lt;div style={{ display: &quot;flex&quot;, width: &quot;100%&quot; }}&gt;
+          {}
+          &lt;svg width={graphW} height={totalH} style={{ flexShrink: 0, display: &quot;block&quot; }}&gt;
+            {rows.map((row, rowIdx) =&gt; {
+              const cy = rowIdx * ROW_H + ROW_H / 2;
+              const cx = row.col * COL_W + COL_W / 2;
+              const nextRow = rows[rowIdx + 1];
+              const elements: React.ReactNode[] = [];
+              const prevRow = rowIdx &gt; 0 ? rows[rowIdx - 1] : null;
+              const yTop = rowIdx * ROW_H;
+              const yBot = (rowIdx + 1) * ROW_H;
+              const incomingLanes = prevRow ? prevRow.lanesAfter : [];
+              const incomingColors = prevRow ? prevRow.laneColors : [];
+              for (let lc = 0; lc &lt; incomingLanes.length; lc++) {
+                const targetHash = incomingLanes[lc];
+                if (targetHash === null) continue;
+                const x = lc * COL_W + COL_W / 2;
+                if (targetHash === row.hash) {
+                  if (lc === row.col) {
+                    elements.push(&lt;line key={`in-${rowIdx}-${lc}`} x1={x} y1={yTop} x2={cx} y2={cy} stroke={incomingColors[lc] ?? &quot;#ccc&quot;} strokeWidth={1.8} /&gt;);
+                  } else {
+                    elements.push(&lt;path key={`in-diag-${rowIdx}-${lc}`} d={`M ${x} ${yTop} C ${x} ${cy - ROW_H*0.4}, ${cx} ${cy - ROW_H*0.4}, ${cx} ${cy}`} stroke={incomingColors[lc] ?? &quot;#ccc&quot;} strokeWidth={1.8} fill=&quot;none&quot; /&gt;);
+                  }
+                } else {
+                  elements.push(&lt;line key={`pass-${rowIdx}-${lc}`} x1={x} y1={yTop} x2={x} y2={yBot} stroke={incomingColors[lc] ?? &quot;#ccc&quot;} strokeWidth={1.8} /&gt;);
+                }
+              }
+              if (nextRow) {
+                if (row.lanesAfter[row.col] !== null) {
+                  elements.push(&lt;line key={`out-self-${rowIdx}`} x1={cx} y1={cy} x2={cx} y2={yBot} stroke={row.color} strokeWidth={1.8} /&gt;);
+                }
+                if (row.parents.length &gt;= 1) {
+                  const firstParent = row.parents[0];
+                  const existingCol = row.lanesAfter.indexOf(firstParent);</pre>
+<div class="footer">第 40 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>                  if (existingCol !== -1 &amp;&amp; existingCol !== row.col) {
+                    const x2 = existingCol * COL_W + COL_W / 2;
+                    elements.push(&lt;path key={`conv-${rowIdx}`} d={`M ${cx} ${cy} C ${cx} ${cy + ROW_H*0.5}, ${x2} ${yBot - ROW_H*0.5}, ${x2} ${yBot}`} stroke={row.color} strokeWidth={1.8} fill=&quot;none&quot; /&gt;);
+                  }
+                }
+                for (let pi = 1; pi &lt; row.parents.length; pi++) {
+                  const p = row.parents[pi];
+                  const targetCol = row.lanesAfter.indexOf(p);
+                  if (targetCol !== -1) {
+                    const x2 = targetCol * COL_W + COL_W / 2;
+                    const branchColor = row.laneColors[targetCol] ?? row.color;
+                    elements.push(&lt;path key={`merge-${rowIdx}-${pi}`} d={`M ${cx} ${cy} C ${cx} ${cy + ROW_H*0.5}, ${x2} ${yBot - ROW_H*0.5}, ${x2} ${yBot}`} stroke={branchColor} strokeWidth={1.8} fill=&quot;none&quot; /&gt;);
+                  }
+                }
+              }
+              elements.push(
+                &lt;circle key={`glow-${rowIdx}`} cx={cx} cy={cy} r={DOT_R + 2.5} fill={row.color} opacity={0.18} /&gt;,
+                &lt;circle key={`dot-${rowIdx}`} cx={cx} cy={cy} r={DOT_R} fill={row.color} /&gt;,
+                &lt;circle key={`inner-${rowIdx}`} cx={cx} cy={cy} r={DOT_R - 2} fill={c.dotInner} /&gt;,
+              );
+              return &lt;g key={rowIdx}&gt;{elements}&lt;/g&gt;;
+            })}
+          &lt;/svg&gt;
+          {}
+          &lt;div style={{ flex: 1, display: &quot;flex&quot;, flexDirection: &quot;column&quot;, minWidth: 0 }}&gt;
+            {rows.map((row, rowIdx) =&gt; {
+              const { branches, tags } = parseRefs(row.refs);
+              const isHead = headOid.length &gt;= 7 &amp;&amp; (row.hash === headOid || headOid.startsWith(row.hash));
+              const rowHeadBranch = isHead ? (headBranch === &quot;HEAD&quot; ? &quot;&quot; : headBranch) : &quot;&quot;;
+              const isEven = rowIdx % 2 === 0;
+              const rowBg = isHead ? c.rowHead : isEven ? c.rowEven : &quot;transparent&quot;;
+              return (
+                &lt;div
+                  key={row.hash}
+                  style={{
+                    height: ROW_H, display: &quot;flex&quot;, alignItems: &quot;center&quot;,
+                    borderBottom: `1px solid ${c.rowBorder}`,
+                    cursor: &quot;default&quot;, overflow: &quot;hidden&quot;,
+                    background: rowBg,
+                    transition: &quot;background 0.12s&quot;,
+                  }}
+                  onMouseEnter={e =&gt; (e.currentTarget.style.background = c.rowHover)}
+                  onMouseLeave={e =&gt; (e.currentTarget.style.background = rowBg)}
+                &gt;
+                  {}
+                  &lt;div style={{ width: HASH_W, paddingLeft: 6, flexShrink: 0 }}&gt;
+                    &lt;code style={{
+                      fontSize: &quot;0.71rem&quot;,
+                      fontFamily: &quot;ui-monospace, &#x27;SF Mono&#x27;, Menlo, Consolas, monospace&quot;,
+                      color: row.color, fontWeight: 700,</pre>
+<div class="footer">第 41 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>                      background: c.hashBadgeBg(row.color),
+                      padding: &quot;2px 5px&quot;, borderRadius: 5,
+                      border: `1px solid ${c.hashBadgeBorder(row.color)}`,
+                    }}&gt;
+                      {row.hash.slice(0, 7)}
+                    &lt;/code&gt;
+                  &lt;/div&gt;
+                  {}
+                  &lt;div style={{ width: AUTHOR_W, flexShrink: 0, display: &quot;flex&quot;, alignItems: &quot;center&quot;, gap: 7, paddingRight: 10 }}&gt;
+                    &lt;AuthorAvatar name={row.author} email={row.email} size={26} /&gt;
+                    &lt;div style={{ minWidth: 0, flex: 1 }}&gt;
+                      &lt;div style={{ fontSize: &quot;0.76rem&quot;, color: c.authorName, fontWeight: 600, whiteSpace: &quot;nowrap&quot;, overflow: &quot;hidden&quot;, textOverflow: &quot;ellipsis&quot;, lineHeight: 1.3 }}&gt;
+                        {row.author}
+                      &lt;/div&gt;
+                      &lt;div style={{ fontSize: &quot;0.66rem&quot;, color: c.authorDate, whiteSpace: &quot;nowrap&quot;, lineHeight: 1.3 }}&gt;
+                        {row.date}
+                      &lt;/div&gt;
+                    &lt;/div&gt;
+                  &lt;/div&gt;
+                  {}
+                  &lt;div style={{ width: REFS_W, flexShrink: 0, display: &quot;flex&quot;, flexWrap: &quot;nowrap&quot;, gap: 3, paddingRight: 8, alignItems: &quot;center&quot;, overflow: &quot;hidden&quot; }}&gt;
+                    {isHead &amp;&amp; (
+                      &lt;span style={{
+                        fontSize: &quot;0.66rem&quot;, padding: &quot;2px 6px&quot;, borderRadius: 5,
+                        background: c.headBadgeBg, color: c.headBadgeColor, fontWeight: 700,
+                        whiteSpace: &quot;nowrap&quot;, lineHeight: &quot;1.55&quot;,
+                        display: &quot;inline-flex&quot;, alignItems: &quot;center&quot;, gap: 3,
+                        boxShadow: &quot;0 1px 4px rgba(0,0,0,0.25)&quot;, flexShrink: 0,
+                      }}&gt;
+                        HEAD{rowHeadBranch ? &lt;span style={{ opacity: 0.55, fontWeight: 400, marginLeft: 1 }}&gt;→ {rowHeadBranch}&lt;/span&gt; : null}
+                      &lt;/span&gt;
+                    )}
+                    {branches.filter(b =&gt; b !== rowHeadBranch).slice(0, 2).map(b =&gt; (
+                      &lt;span key={b} style={{
+                        fontSize: &quot;0.66rem&quot;, padding: &quot;2px 6px&quot;, borderRadius: 5,
+                        background: c.branchBg, color: c.branchColor,
+                        border: `1px solid ${c.branchBorder}`,
+                        whiteSpace: &quot;nowrap&quot;, maxWidth: 108, overflow: &quot;hidden&quot;, textOverflow: &quot;ellipsis&quot;,
+                        lineHeight: &quot;1.55&quot;, flexShrink: 0,
+                        display: &quot;inline-flex&quot;, alignItems: &quot;center&quot;, gap: 3,
+                      }}&gt;
+                        &lt;svg width=&quot;8&quot; height=&quot;9&quot; viewBox=&quot;0 0 8 9&quot; fill=&quot;none&quot; style={{ opacity: 0.6 }}&gt;
+                          &lt;path d=&quot;M1 1v4.5a1.5 1.5 0 0 0 1.5 1.5H5M1 1l2-0M1 1l2 2M6.5 6a1.5 1.5 0 1 1 0 .001&quot; stroke=&quot;currentColor&quot; strokeWidth=&quot;1.2&quot; strokeLinecap=&quot;round&quot;/&gt;
+                        &lt;/svg&gt;
+                        {b}
+                      &lt;/span&gt;
+                    ))}
+                    {tags.slice(0, 1).map(t =&gt; (
+                      &lt;span key={t} style={{
+                        fontSize: &quot;0.66rem&quot;, padding: &quot;2px 6px&quot;, borderRadius: 5,</pre>
+<div class="footer">第 42 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>                        background: c.tagBg, color: c.tagColor,
+                        border: `1px solid ${c.tagBorder}`,
+                        whiteSpace: &quot;nowrap&quot;, lineHeight: &quot;1.55&quot;, flexShrink: 0,
+                      }}&gt;
+                        🏷 {t}
+                      &lt;/span&gt;
+                    ))}
+                  &lt;/div&gt;
+                  {}
+                  &lt;div style={{ flex: 1, paddingRight: 16, minWidth: 0 }}&gt;
+                    &lt;span style={{
+                      fontSize: &quot;0.84rem&quot;,
+                      color: isHead ? c.subjectHead : c.subjectDefault,
+                      display: &quot;block&quot;, whiteSpace: &quot;nowrap&quot;,
+                      overflow: &quot;hidden&quot;, textOverflow: &quot;ellipsis&quot;,
+                      lineHeight: &quot;1.4&quot;, fontWeight: isHead ? 600 : 400,
+                    }}&gt;
+                      {row.subject}
+                    &lt;/span&gt;
+                  &lt;/div&gt;
+                &lt;/div&gt;
+              );
+            })}
+          &lt;/div&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  );
+}
+import { useState, useEffect } from &quot;react&quot;;
+import { invoke } from &quot;@tauri-apps/api/core&quot;;
+import { getVersion } from &quot;@tauri-apps/api/app&quot;;
+import { Modal } from &quot;@heroui/react&quot;;
+import {
+  Palette,
+  GitBranch,
+  Code2,
+  Bell,
+  RefreshCw,
+  RotateCcw,
+  X,
+  Download,
+  CheckCircle,
+  AlertCircle,
+  Sparkles,
+  Cpu,
+  Trash2,
+} from &quot;lucide-react&quot;;
+import {
+  AppSettings,</pre>
+<div class="footer">第 43 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>  DEFAULT_SETTINGS,
+  Theme,
+  PullStrategy,
+  GlassIntensity,
+  Language,
+} from &quot;../settings&quot;;
+import { useT } from &quot;../i18n&quot;;
+import { LOCALE_LABELS, LOCALES } from &quot;../i18n&quot;;
+interface Props {
+  isOpen: boolean;
+  onClose: () =&gt; void;
+  settings: AppSettings;
+  onSave: (s: AppSettings) =&gt; void;
+}
+type Section =
+  | &quot;appearance&quot;
+  | &quot;git&quot;
+  | &quot;editor&quot;
+  | &quot;ai&quot;
+  | &quot;notifications&quot;
+  | &quot;updates&quot;;
+function Row({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    &lt;div className=&quot;settings-row&quot;&gt;
+      &lt;div className=&quot;settings-row-label&quot;&gt;
+        &lt;span className=&quot;settings-label&quot;&gt;{label}&lt;/span&gt;
+        {hint &amp;&amp; &lt;span className=&quot;settings-hint&quot;&gt;{hint}&lt;/span&gt;}
+      &lt;/div&gt;
+      &lt;div className=&quot;settings-control&quot;&gt;{children}&lt;/div&gt;
+    &lt;/div&gt;
+  );
+}
+function Select&lt;T extends string&gt;({
+  value,
+  onChange,
+  options,
+}: {
+  value: T;
+  onChange: (v: T) =&gt; void;
+  options: { value: T; label: string }[];
+}) {
+  return (</pre>
+<div class="footer">第 44 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>    &lt;select
+      className=&quot;settings-select&quot;
+      value={value}
+      onChange={(e) =&gt; onChange(e.target.value as T)}
+    &gt;
+      {options.map((o) =&gt; (
+        &lt;option key={o.value} value={o.value}&gt;
+          {o.label}
+        &lt;/option&gt;
+      ))}
+    &lt;/select&gt;
+  );
+}
+function Toggle({
+  checked,
+  onChange,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) =&gt; void;
+}) {
+  return (
+    &lt;button
+      role=&quot;switch&quot;
+      aria-checked={checked}
+      className={`settings-toggle ${checked ? &quot;settings-toggle-on&quot; : &quot;&quot;}`}
+      onClick={() =&gt; onChange(!checked)}
+    &gt;
+      &lt;span className=&quot;settings-toggle-thumb&quot; /&gt;
+    &lt;/button&gt;
+  );
+}
+function TextInput({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  onChange: (v: string) =&gt; void;
+  placeholder?: string;
+}) {
+  return (
+    &lt;input
+      className=&quot;settings-input&quot;
+      value={value}
+      onChange={(e) =&gt; onChange(e.target.value)}
+      placeholder={placeholder}
+      spellCheck={false}
+    /&gt;
+  );
+}</pre>
+<div class="footer">第 45 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>function NumberInput({
+  value,
+  onChange,
+  min,
+  max,
+  step = 1,
+}: {
+  value: number;
+  onChange: (v: number) =&gt; void;
+  min: number;
+  max: number;
+  step?: number;
+}) {
+  return (
+    &lt;div className=&quot;settings-number-wrap&quot;&gt;
+      &lt;input
+        type=&quot;range&quot;
+        className=&quot;settings-range&quot;
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) =&gt; onChange(Number(e.target.value))}
+      /&gt;
+      &lt;span className=&quot;settings-number-value&quot;&gt;{value}&lt;/span&gt;
+    &lt;/div&gt;
+  );
+}
+function AppearanceSection({
+  s,
+  set,
+}: {
+  s: AppSettings;
+  set: (p: Partial&lt;AppSettings&gt;) =&gt; void;
+}) {
+  const t = useT();
+  return (
+    &lt;div className=&quot;settings-section-body&quot;&gt;
+      &lt;Row label={t.settingsLanguage} hint={t.settingsLanguageHint}&gt;
+        &lt;Select&lt;Language&gt;
+          value={s.language ?? &quot;en&quot;}
+          onChange={(v) =&gt; set({ language: v })}
+          options={LOCALES.map((l) =&gt; ({ value: l, label: LOCALE_LABELS[l] }))}
+        /&gt;
+      &lt;/Row&gt;
+      &lt;Row label={t.settingsTheme} hint={t.settingsThemeHint}&gt;
+        &lt;Select&lt;Theme&gt;
+          value={s.theme}
+          onChange={(v) =&gt; set({ theme: v })}
+          options={[</pre>
+<div class="footer">第 46 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>            { value: &quot;system&quot;, label: t.settingsThemeSystem },
+            { value: &quot;light&quot;, label: t.settingsThemeLight },
+            { value: &quot;dark&quot;, label: t.settingsThemeDark },
+          ]}
+        /&gt;
+      &lt;/Row&gt;
+      &lt;Row label={t.settingsFontSize} hint={t.settingsFontSizePx(s.fontSize)}&gt;
+        &lt;NumberInput
+          value={s.fontSize}
+          onChange={(v) =&gt; set({ fontSize: v })}
+          min={12}
+          max={18}
+        /&gt;
+      &lt;/Row&gt;
+      &lt;Row label={t.settingsGlassIntensity} hint={t.settingsGlassHint}&gt;
+        &lt;Select&lt;GlassIntensity&gt;
+          value={s.glassIntensity}
+          onChange={(v) =&gt; set({ glassIntensity: v })}
+          options={[
+            { value: &quot;none&quot;, label: t.settingsGlassNone },
+            { value: &quot;low&quot;, label: t.settingsGlassLow },
+            { value: &quot;medium&quot;, label: t.settingsGlassMedium },
+            { value: &quot;high&quot;, label: t.settingsGlassHigh },
+          ]}
+        /&gt;
+      &lt;/Row&gt;
+    &lt;/div&gt;
+  );
+}
+function GitSection({
+  s,
+  set,
+}: {
+  s: AppSettings;
+  set: (p: Partial&lt;AppSettings&gt;) =&gt; void;
+}) {
+  const t = useT();
+  return (
+    &lt;div className=&quot;settings-section-body&quot;&gt;
+      &lt;Row label={t.settingsPullStrategy} hint={t.settingsPullHint}&gt;
+        &lt;Select&lt;PullStrategy&gt;
+          value={s.pullStrategy}
+          onChange={(v) =&gt; set({ pullStrategy: v })}
+          options={[
+            { value: &quot;merge&quot;, label: t.settingsPullMerge },
+            { value: &quot;rebase&quot;, label: t.settingsPullRebase },
+            { value: &quot;ff-only&quot;, label: t.settingsPullFF },
+          ]}
+        /&gt;
+      &lt;/Row&gt;</pre>
+<div class="footer">第 47 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>      &lt;Row label={t.settingsAutoPrune} hint={t.settingsAutoPruneHint}&gt;
+        &lt;Toggle
+          checked={s.autoPruneOnFetch}
+          onChange={(v) =&gt; set({ autoPruneOnFetch: v })}
+        /&gt;
+      &lt;/Row&gt;
+      &lt;Row label={t.settingsCommitTemplate} hint={t.settingsCommitTemplateHint}&gt;
+        &lt;TextInput
+          value={s.commitMsgTemplate}
+          onChange={(v) =&gt; set({ commitMsgTemplate: v })}
+          placeholder={t.settingsCommitTemplatePlaceholder}
+        /&gt;
+      &lt;/Row&gt;
+    &lt;/div&gt;
+  );
+}
+function EditorSection({
+  s,
+  set,
+}: {
+  s: AppSettings;
+  set: (p: Partial&lt;AppSettings&gt;) =&gt; void;
+}) {
+  const t = useT();
+  return (
+    &lt;div className=&quot;settings-section-body&quot;&gt;
+      &lt;Row label={t.settingsExternalEditor} hint={t.settingsExternalEditorHint}&gt;
+        &lt;TextInput
+          value={s.externalEditor}
+          onChange={(v) =&gt; set({ externalEditor: v })}
+          placeholder={t.settingsExternalEditorPlaceholder}
+        /&gt;
+      &lt;/Row&gt;
+      &lt;Row label={t.settingsExternalDiff} hint={t.settingsExternalDiffHint}&gt;
+        &lt;TextInput
+          value={s.externalDiffTool}
+          onChange={(v) =&gt; set({ externalDiffTool: v })}
+          placeholder={t.settingsExternalDiffPlaceholder}
+        /&gt;
+      &lt;/Row&gt;
+    &lt;/div&gt;
+  );
+}
+function NotificationsSection({
+  s,
+  set,
+}: {
+  s: AppSettings;
+  set: (p: Partial&lt;AppSettings&gt;) =&gt; void;
+}) {</pre>
+<div class="footer">第 48 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>  const t = useT();
+  return (
+    &lt;div className=&quot;settings-section-body&quot;&gt;
+      &lt;Row label={t.settingsFileWatcher} hint={t.settingsFileWatcherHint}&gt;
+        &lt;Toggle
+          checked={s.fileWatcherEnabled}
+          onChange={(v) =&gt; set({ fileWatcherEnabled: v })}
+        /&gt;
+      &lt;/Row&gt;
+      &lt;Row
+        label={t.settingsWatcherDebounce}
+        hint={t.settingsWatcherDebounceHint(s.fileWatcherDebounceMs)}
+      &gt;
+        &lt;NumberInput
+          value={s.fileWatcherDebounceMs}
+          onChange={(v) =&gt; set({ fileWatcherDebounceMs: v })}
+          min={200}
+          max={5000}
+          step={100}
+        /&gt;
+      &lt;/Row&gt;
+      &lt;Row label={t.settingsNotifyPush} hint={t.settingsNotifyPushHint}&gt;
+        &lt;Toggle
+          checked={s.notifyOnPush}
+          onChange={(v) =&gt; set({ notifyOnPush: v })}
+        /&gt;
+      &lt;/Row&gt;
+      &lt;Row label={t.settingsNotifyPull} hint={t.settingsNotifyPullHint}&gt;
+        &lt;Toggle
+          checked={s.notifyOnPull}
+          onChange={(v) =&gt; set({ notifyOnPull: v })}
+        /&gt;
+      &lt;/Row&gt;
+    &lt;/div&gt;
+  );
+}
+type UpdateStatus =
+  | { kind: &quot;idle&quot; }
+  | { kind: &quot;checking&quot; }
+  | { kind: &quot;upToDate&quot; }
+  | { kind: &quot;available&quot;; version: string; body: string | null }
+  | { kind: &quot;installing&quot; }
+  | { kind: &quot;error&quot;; message: string };
+function UpdatesSection({
+  s,
+  set,
+}: {
+  s: AppSettings;
+  set: (p: Partial&lt;AppSettings&gt;) =&gt; void;
+}) {</pre>
+<div class="footer">第 49 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>  const t = useT();
+  const [status, setStatus] = useState&lt;UpdateStatus&gt;({ kind: &quot;idle&quot; });
+  const [appVersion, setAppVersion] = useState&lt;string&gt;(&quot;&quot;);
+  useEffect(() =&gt; {
+    getVersion()
+      .then((v) =&gt; setAppVersion(v))
+      .catch(() =&gt; setAppVersion(&quot;—&quot;));
+  }, []);
+  async function handleCheck() {
+    setStatus({ kind: &quot;checking&quot; });
+    try {
+      const info = await invoke&lt;{
+        version: string;
+        body: string | null;
+      } | null&gt;(&quot;check_for_updates&quot;);
+      if (info) {
+        setStatus({
+          kind: &quot;available&quot;,
+          version: info.version,
+          body: info.body,
+        });
+      } else {
+        setStatus({ kind: &quot;upToDate&quot; });
+      }
+    } catch (e) {
+      setStatus({ kind: &quot;error&quot;, message: String(e) });
+    }
+  }
+  async function handleInstall() {
+    setStatus({ kind: &quot;installing&quot; });
+    try {
+      await invoke(&quot;install_update&quot;);
+    } catch (e) {
+      setStatus({ kind: &quot;error&quot;, message: String(e) });
+    }
+  }
+  return (
+    &lt;div className=&quot;settings-section-body&quot;&gt;
+      {}
+      &lt;Row label={t.settingsCurrentVersion}&gt;
+        &lt;span className=&quot;settings-version-badge&quot;&gt;{appVersion || &quot;—&quot;}&lt;/span&gt;
+      &lt;/Row&gt;
+      {}
+      &lt;Row
+        label={t.settingsAutoCheckUpdates}
+        hint={t.settingsAutoCheckUpdatesHint}
+      &gt;
+        &lt;Toggle
+          checked={s.autoCheckUpdates}
+          onChange={(v) =&gt; set({ autoCheckUpdates: v })}</pre>
+<div class="footer">第 50 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>        /&gt;
+      &lt;/Row&gt;
+      {}
+      &lt;div className=&quot;settings-update-card&quot;&gt;
+        {status.kind === &quot;idle&quot; &amp;&amp; (
+          &lt;button className=&quot;settings-check-btn&quot; onClick={handleCheck}&gt;
+            &lt;RefreshCw size={13} /&gt;
+            {t.settingsCheckNow}
+          &lt;/button&gt;
+        )}
+        {status.kind === &quot;checking&quot; &amp;&amp; (
+          &lt;div className=&quot;settings-update-state settings-update-checking&quot;&gt;
+            &lt;RefreshCw size={14} className=&quot;settings-spin&quot; /&gt;
+            {t.settingsChecking}
+          &lt;/div&gt;
+        )}
+        {status.kind === &quot;upToDate&quot; &amp;&amp; (
+          &lt;div className=&quot;settings-update-state settings-update-ok&quot;&gt;
+            &lt;CheckCircle size={14} /&gt;
+            {t.settingsUpToDate}
+            &lt;button className=&quot;settings-check-again-btn&quot; onClick={handleCheck}&gt;
+              &lt;RefreshCw size={11} /&gt;
+            &lt;/button&gt;
+          &lt;/div&gt;
+        )}
+        {status.kind === &quot;available&quot; &amp;&amp; (
+          &lt;div className=&quot;settings-update-available&quot;&gt;
+            &lt;div className=&quot;settings-update-header&quot;&gt;
+              &lt;Sparkles size={14} className=&quot;settings-update-sparkle&quot; /&gt;
+              &lt;span className=&quot;settings-update-version&quot;&gt;
+                {t.settingsUpdateAvailable(status.version)}
+              &lt;/span&gt;
+            &lt;/div&gt;
+            {status.body &amp;&amp; (
+              &lt;details className=&quot;settings-update-notes&quot;&gt;
+                &lt;summary&gt;{t.settingsUpdateNotes}&lt;/summary&gt;
+                &lt;pre className=&quot;settings-update-body&quot;&gt;{status.body}&lt;/pre&gt;
+              &lt;/details&gt;
+            )}
+            &lt;button className=&quot;settings-install-btn&quot; onClick={handleInstall}&gt;
+              &lt;Download size={13} /&gt;
+              {t.settingsInstallUpdate}
+            &lt;/button&gt;
+          &lt;/div&gt;
+        )}
+        {status.kind === &quot;installing&quot; &amp;&amp; (
+          &lt;div className=&quot;settings-update-state settings-update-checking&quot;&gt;
+            &lt;RefreshCw size={14} className=&quot;settings-spin&quot; /&gt;
+            {t.settingsInstalling}
+          &lt;/div&gt;</pre>
+<div class="footer">第 51 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>        )}
+        {status.kind === &quot;error&quot; &amp;&amp; (
+          &lt;div className=&quot;settings-update-state settings-update-error&quot;&gt;
+            &lt;AlertCircle size={14} style={{ flexShrink: 0 }} /&gt;
+            &lt;div style={{ flex: 1, minWidth: 0 }}&gt;
+              &lt;div&gt;{t.settingsUpdateError}&lt;/div&gt;
+              &lt;div className=&quot;settings-update-errormsg&quot;&gt;
+                {}
+                {status.message.toLowerCase().includes(&quot;fetch&quot;) ||
+                status.message.toLowerCase().includes(&quot;network&quot;) ||
+                status.message.toLowerCase().includes(&quot;remote&quot;) ||
+                status.message.toLowerCase().includes(&quot;404&quot;) ||
+                status.message.toLowerCase().includes(&quot;json&quot;)
+                  ? t.settingsUpdateNetworkError
+                  : status.message}
+              &lt;/div&gt;
+            &lt;/div&gt;
+            &lt;button
+              className=&quot;settings-check-again-btn&quot;
+              onClick={handleCheck}
+              style={{ flexShrink: 0 }}
+            &gt;
+              &lt;RefreshCw size={11} /&gt;
+            &lt;/button&gt;
+          &lt;/div&gt;
+        )}
+      &lt;/div&gt;
+    &lt;/div&gt;
+  );
+}
+interface RecommendedModel {
+  name: string;
+  url: string;
+  label: string;
+  size: string;
+  quality: &quot;good&quot; | &quot;better&quot; | &quot;best&quot;;
+  noteKey?: keyof import(&quot;../i18n&quot;).Translations;
+}
+const RECOMMENDED_MODELS: RecommendedModel[] = [
+  {
+    name: &quot;qwen2.5-3b-instruct-q4_k_m.gguf&quot;,
+    url: &quot;https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf&quot;,
+    label: &quot;Qwen2.5 3B Instruct&quot;,
+    size: &quot;~2.0GB&quot;,
+    quality: &quot;better&quot;,
+    noteKey: &quot;aiModel3BNote&quot;,
+  },
+  {
+    name: &quot;qwen2.5-7b-instruct-q4_k_m.gguf&quot;,
+    url: &quot;https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf&quot;,</pre>
+<div class="footer">第 52 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>    label: &quot;Qwen2.5 7B Instruct&quot;,
+    size: &quot;~4.5GB&quot;,
+    quality: &quot;best&quot;,
+    noteKey: &quot;aiModel7BNote&quot;,
+  },
+  {
+    name: &quot;qwen2.5-1.5b-instruct-q4_k_m.gguf&quot;,
+    url: &quot;https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf&quot;,
+    label: &quot;Qwen2.5 1.5B Instruct&quot;,
+    size: &quot;~1.0GB&quot;,
+    quality: &quot;good&quot;,
+    noteKey: &quot;aiModel1_5BNote&quot;,
+  },
+];
+function AISection({
+  s,
+  set,
+}: {
+  s: AppSettings;
+  set: (p: Partial&lt;AppSettings&gt;) =&gt; void;
+}) {
+  const t = useT();
+  const [localModels, setLocalModels] = useState&lt;string[]&gt;([]);
+  const [modelsDir, setModelsDir] = useState&lt;string&gt;(&quot;&quot;);
+  const [downloadingModel, setDownloadingModel] = useState&lt;string | null&gt;(null);
+  const [downloadStatus, setDownloadStatus] = useState&lt;string&gt;(&quot;&quot;);
+  const [deletingModel, setDeletingModel] = useState&lt;string | null&gt;(null);
+  async function refreshModels(): Promise&lt;string[]&gt; {
+    const models: string[] = await invoke&lt;string[]&gt;(
+      &quot;ai_list_local_models&quot;,
+    ).catch(() =&gt; [] as string[]);
+    setLocalModels(models);
+    return models;
+  }
+  useEffect(() =&gt; {
+    refreshModels().then((models) =&gt; {
+      if (s.aiLocalModel &amp;&amp; !models.includes(s.aiLocalModel)) {
+        set({ aiLocalModel: models[0] ?? &quot;&quot; });
+      }
+    });
+    invoke&lt;string&gt;(&quot;ai_models_dir&quot;)
+      .then(setModelsDir)
+      .catch(() =&gt; {});
+  }, []);
+  async function handleDownload(url: string, filename: string) {
+    setDownloadingModel(filename);
+    setDownloadStatus(t.aiDownloading);
+    try {
+      await invoke(&quot;ai_download_model&quot;, { url, filename });
+      setDownloadStatus(t.aiDownloadSuccess);</pre>
+<div class="footer">第 53 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>      const models = await refreshModels();
+      if (models.includes(filename)) set({ aiLocalModel: filename });
+    } catch (e) {
+      setDownloadStatus(`${t.aiDownloadError}: ${e}`);
+    } finally {
+      setDownloadingModel(null);
+    }
+  }
+  async function handleDelete(filename: string) {
+    if (!confirm(`Delete model &quot;${filename}&quot;?`)) return;
+    setDeletingModel(filename);
+    try {
+      await invoke(&quot;ai_delete_model&quot;, { filename });
+      const models = await refreshModels();
+      if (s.aiLocalModel === filename) {
+        set({ aiLocalModel: models[0] ?? &quot;&quot; });
+      }
+      setDownloadStatus(&quot;&quot;);
+    } catch (e) {
+      setDownloadStatus(`Delete failed: ${e}`);
+    } finally {
+      setDeletingModel(null);
+    }
+  }
+  return (
+    &lt;div className=&quot;settings-section-body&quot;&gt;
+      &lt;Row label={t.aiUseLocalModel} hint={t.aiUseLocalModelHint}&gt;
+        &lt;Toggle
+          checked={s.aiUseLocalModel}
+          onChange={(v) =&gt; set({ aiUseLocalModel: v })}
+        /&gt;
+      &lt;/Row&gt;
+      {s.aiUseLocalModel ? (
+        &lt;&gt;
+          {}
+          &lt;Row label={t.aiLocalModelLabel} hint={t.aiLocalModelHint}&gt;
+            {localModels.length &gt; 0 ? (
+              &lt;Select
+                value={s.aiLocalModel}
+                onChange={(v) =&gt; set({ aiLocalModel: v })}
+                options={localModels.map((m) =&gt; ({ value: m, label: m }))}
+              /&gt;
+            ) : (
+              &lt;span className=&quot;text-xs text-default-500&quot;&gt;
+                {t.aiNoLocalModel}
+              &lt;/span&gt;
+            )}
+          &lt;/Row&gt;
+          {}
+          {localModels.length &gt; 0 &amp;&amp; (</pre>
+<div class="footer">第 54 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>            &lt;div
+              className=&quot;settings-row&quot;
+              style={{ flexDirection: &quot;column&quot;, alignItems: &quot;stretch&quot;, gap: 6 }}
+            &gt;
+              &lt;span className=&quot;settings-label&quot;&gt;
+                {t.aiInstalledModels ?? &quot;Installed Models&quot;}
+              &lt;/span&gt;
+              &lt;div className=&quot;ai-model-list&quot;&gt;
+                {localModels.map((m) =&gt; (
+                  &lt;div
+                    key={m}
+                    className={`ai-model-row ${s.aiLocalModel === m ? &quot;ai-model-row-active&quot; : &quot;&quot;}`}
+                  &gt;
+                    &lt;span className=&quot;ai-model-name&quot;&gt;{m}&lt;/span&gt;
+                    &lt;button
+                      className=&quot;ai-model-delete-btn&quot;
+                      onClick={() =&gt; handleDelete(m)}
+                      disabled={deletingModel === m}
+                      title={`Delete ${m}`}
+                      aria-label={`Delete ${m}`}
+                    &gt;
+                      {deletingModel === m ? (
+                        &lt;RefreshCw size={11} className=&quot;settings-spin&quot; /&gt;
+                      ) : (
+                        &lt;Trash2 size={11} /&gt;
+                      )}
+                    &lt;/button&gt;
+                  &lt;/div&gt;
+                ))}
+              &lt;/div&gt;
+            &lt;/div&gt;
+          )}
+          {}
+          &lt;div
+            className=&quot;settings-row&quot;
+            style={{
+              flexDirection: &quot;column&quot;,
+              alignItems: &quot;flex-start&quot;,
+              gap: 4,
+            }}
+          &gt;
+            &lt;div className=&quot;settings-row-label&quot;&gt;
+              &lt;span className=&quot;settings-label&quot;&gt;{t.aiModelsDir}&lt;/span&gt;
+              &lt;span className=&quot;settings-hint&quot;&gt;{t.aiModelsDirHint}&lt;/span&gt;
+            &lt;/div&gt;
+            &lt;span
+              className=&quot;settings-hint font-mono&quot;
+              style={{
+                fontSize: &quot;0.75rem&quot;,
+                wordBreak: &quot;break-all&quot;,</pre>
+<div class="footer">第 55 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>                paddingTop: 2,
+              }}
+            &gt;
+              {modelsDir || &quot;…&quot;}
+            &lt;/span&gt;
+          &lt;/div&gt;
+          {}
+          &lt;div
+            className=&quot;settings-row&quot;
+            style={{ flexDirection: &quot;column&quot;, alignItems: &quot;stretch&quot;, gap: 8 }}
+          &gt;
+            &lt;div className=&quot;settings-row-label&quot;&gt;
+              &lt;span className=&quot;settings-label&quot;&gt;{t.aiDownloadModel}&lt;/span&gt;
+              &lt;span className=&quot;settings-hint&quot;&gt;{t.aiDownloadModelHint}&lt;/span&gt;
+            &lt;/div&gt;
+            &lt;div className=&quot;ai-download-list&quot;&gt;
+              {RECOMMENDED_MODELS.map((m) =&gt; {
+                const installed = localModels.includes(m.name);
+                const isDownloading = downloadingModel === m.name;
+                return (
+                  &lt;div
+                    key={m.name}
+                    className={`ai-download-row ${installed ? &quot;ai-download-row-installed&quot; : &quot;&quot;}`}
+                  &gt;
+                    &lt;div className=&quot;ai-download-info&quot;&gt;
+                      &lt;div className=&quot;ai-download-label&quot;&gt;
+                        {m.label}
+                        &lt;span
+                          className={`ai-quality-badge ai-quality-${m.quality}`}
+                        &gt;
+                          {m.quality === &quot;best&quot;
+                            ? &quot;★★★&quot;
+                            : m.quality === &quot;better&quot;
+                              ? &quot;★★&quot;
+                              : &quot;★&quot;}
+                        &lt;/span&gt;
+                      &lt;/div&gt;
+                      &lt;div className=&quot;ai-download-meta&quot;&gt;
+                        &lt;span className=&quot;ai-download-size&quot;&gt;{m.size}&lt;/span&gt;
+                        {m.noteKey &amp;&amp; (
+                          &lt;span className=&quot;ai-download-note&quot;&gt;
+                            {t[m.noteKey] as string}
+                          &lt;/span&gt;
+                        )}
+                      &lt;/div&gt;
+                    &lt;/div&gt;
+                    &lt;button
+                      className={`ai-download-btn ${installed ? &quot;ai-download-btn-installed&quot; : &quot;&quot;}`}
+                      disabled={!!downloadingModel || installed}
+                      onClick={() =&gt; handleDownload(m.url, m.name)}</pre>
+<div class="footer">第 56 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>                    &gt;
+                      {isDownloading ? (
+                        &lt;RefreshCw size={11} className=&quot;settings-spin&quot; /&gt;
+                      ) : installed ? (
+                        &lt;CheckCircle size={11} /&gt;
+                      ) : (
+                        &lt;Download size={11} /&gt;
+                      )}
+                      {isDownloading
+                        ? t.aiDownloading
+                        : installed
+                          ? t.aiModelInstalled
+                          : t.aiModelDownloadBtn}
+                    &lt;/button&gt;
+                  &lt;/div&gt;
+                );
+              })}
+            &lt;/div&gt;
+            {downloadStatus &amp;&amp; (
+              &lt;span
+                className={`text-xs ${downloadStatus.includes(&quot;failed&quot;) || downloadStatus.includes(&quot;Error&quot;) ? &quot;text-danger-500&quot; : &quot;text-default-500&quot;}`}
+              &gt;
+                {downloadStatus}
+              &lt;/span&gt;
+            )}
+          &lt;/div&gt;
+        &lt;/&gt;
+      ) : (
+        &lt;&gt;
+          &lt;Row label={t.aiEndpoint} hint={t.aiEndpointHint}&gt;
+            &lt;TextInput
+              value={s.aiEndpoint}
+              onChange={(v) =&gt; set({ aiEndpoint: v })}
+              placeholder=&quot;https://api.openai.com/v1&quot;
+            /&gt;
+          &lt;/Row&gt;
+          &lt;Row label={t.aiApiKeyLabel} hint={t.aiApiKeyHint}&gt;
+            &lt;TextInput
+              value={s.aiApiKey}
+              onChange={(v) =&gt; set({ aiApiKey: v })}
+              placeholder=&quot;sk-...&quot;
+            /&gt;
+          &lt;/Row&gt;
+          &lt;Row label={t.aiModelLabel} hint={t.aiModelHint}&gt;
+            &lt;TextInput
+              value={s.aiModel}
+              onChange={(v) =&gt; set({ aiModel: v })}
+              placeholder=&quot;gpt-4o-mini&quot;
+            /&gt;
+          &lt;/Row&gt;</pre>
+<div class="footer">第 57 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>        &lt;/&gt;
+      )}
+    &lt;/div&gt;
+  );
+}
+export function SettingsModal({ isOpen, onClose, settings, onSave }: Props) {
+  const t = useT();
+  const [draft, setDraft] = useState&lt;AppSettings&gt;(settings);
+  const [activeSection, setActiveSection] = useState&lt;Section&gt;(&quot;appearance&quot;);
+  type SectionDef = { id: Section; label: string; icon: React.ReactNode };
+  type NavGroup = { group: string; items: SectionDef[] };
+  const NAV_GROUPS: NavGroup[] = [
+    {
+      group: t.settingsGroupGeneral ?? &quot;General&quot;,
+      items: [
+        {
+          id: &quot;appearance&quot;,
+          label: t.settingsAppearance,
+          icon: &lt;Palette size={14} /&gt;,
+        },
+        {
+          id: &quot;git&quot;,
+          label: t.settingsGitBehaviour,
+          icon: &lt;GitBranch size={14} /&gt;,
+        },
+        {
+          id: &quot;editor&quot;,
+          label: t.settingsEditorTools,
+          icon: &lt;Code2 size={14} /&gt;,
+        },
+      ],
+    },
+    {
+      group: t.settingsGroupAdvanced ?? &quot;Advanced&quot;,
+      items: [
+        { id: &quot;ai&quot;, label: t.aiCommitMessage, icon: &lt;Cpu size={14} /&gt; },
+        {
+          id: &quot;notifications&quot;,
+          label: t.settingsNotifications,
+          icon: &lt;Bell size={14} /&gt;,
+        },
+        {
+          id: &quot;updates&quot;,
+          label: t.settingsUpdates,
+          icon: &lt;RefreshCw size={14} /&gt;,
+        },
+      ],
+    },
+  ];
+  function handleOpen() {</pre>
+<div class="footer">第 58 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>    setDraft(settings);
+    setActiveSection(&quot;appearance&quot;);
+  }
+  function patch(partial: Partial&lt;AppSettings&gt;) {
+    setDraft((prev) =&gt; ({ ...prev, ...partial }));
+  }
+  function handleSave() {
+    onSave(draft);
+    onClose();
+  }
+  function handleReset() {
+    if (confirm(t.settingsResetConfirm)) {
+      setDraft({ ...DEFAULT_SETTINGS });
+    }
+  }
+  return (
+    &lt;Modal
+      isOpen={isOpen}
+      onOpenChange={(open) =&gt; {
+        if (!open) onClose();
+        else handleOpen();
+      }}
+    &gt;
+      &lt;Modal.Backdrop&gt;
+        &lt;Modal.Container placement=&quot;center&quot;&gt;
+          &lt;Modal.Dialog className=&quot;app-modal settings-modal p-0&quot;&gt;
+            {}
+            &lt;div className=&quot;settings-header&quot;&gt;
+              &lt;span className=&quot;settings-title&quot;&gt;{t.settingsTitle}&lt;/span&gt;
+              &lt;button
+                className=&quot;settings-close-btn&quot;
+                onClick={onClose}
+                aria-label={t.close}
+              &gt;
+                &lt;X size={15} /&gt;
+              &lt;/button&gt;
+            &lt;/div&gt;
+            &lt;div className=&quot;settings-body&quot;&gt;
+              {}
+              &lt;nav className=&quot;settings-nav&quot;&gt;
+                {NAV_GROUPS.map((grp) =&gt; (
+                  &lt;div key={grp.group}&gt;
+                    &lt;div className=&quot;settings-nav-group&quot;&gt;{grp.group}&lt;/div&gt;
+                    {grp.items.map((sec) =&gt; (
+                      &lt;button
+                        key={sec.id}
+                        className={`settings-nav-item ${activeSection === sec.id ? &quot;settings-nav-item-active&quot; : &quot;&quot;}`}
+                        onClick={() =&gt; setActiveSection(sec.id)}
+                      &gt;
+                        &lt;span className=&quot;settings-nav-icon&quot;&gt;{sec.icon}&lt;/span&gt;</pre>
+<div class="footer">第 59 页 / 共 60 页</div>
+</div>
+<div class="page">
+<div class="header"><span>Arbor Git 客户端软件 V1.0</span><span>源代码文档</span></div>
+<pre>                        {sec.label}
+                      &lt;/button&gt;
+                    ))}
+                  &lt;/div&gt;
+                ))}
+              &lt;/nav&gt;
+              {}
+              &lt;div className=&quot;settings-content&quot;&gt;
+                {activeSection === &quot;appearance&quot; &amp;&amp; (
+                  &lt;AppearanceSection s={draft} set={patch} /&gt;
+                )}
+                {activeSection === &quot;git&quot; &amp;&amp; (
+                  &lt;GitSection s={draft} set={patch} /&gt;
+                )}
+                {activeSection === &quot;editor&quot; &amp;&amp; (
+                  &lt;EditorSection s={draft} set={patch} /&gt;
+                )}
+                {activeSection === &quot;ai&quot; &amp;&amp; &lt;AISection s={draft} set={patch} /&gt;}
+                {activeSection === &quot;notifications&quot; &amp;&amp; (
+                  &lt;NotificationsSection s={draft} set={patch} /&gt;
+                )}
+                {activeSection === &quot;updates&quot; &amp;&amp; (
+                  &lt;UpdatesSection s={draft} set={patch} /&gt;
+                )}
+              &lt;/div&gt;
+            &lt;/div&gt;
+            {}
+            &lt;div className=&quot;settings-footer&quot;&gt;
+              &lt;button className=&quot;settings-reset-btn&quot; onClick={handleReset}&gt;
+                &lt;RotateCcw size={12} /&gt;
+                {t.settingsResetDefaults}
+              &lt;/button&gt;
+              &lt;div className=&quot;flex gap-2&quot;&gt;
+                &lt;button
+                  className=&quot;toolbar-button px-4 py-1.5 text-sm rounded-lg text-default-500&quot;
+                  onClick={onClose}
+                &gt;
+                  {t.cancel}
+                &lt;/button&gt;
+                &lt;button className=&quot;settings-save-btn&quot; onClick={handleSave}&gt;
+                  {t.save}
+                &lt;/button&gt;
+              &lt;/div&gt;
+            &lt;/div&gt;
+          &lt;/Modal.Dialog&gt;
+        &lt;/Modal.Container&gt;
+      &lt;/Modal.Backdrop&gt;
+    &lt;/Modal&gt;
+  );
+}</pre>
+<div class="footer">第 60 页 / 共 60 页</div>
+</div>
+</body></html>
