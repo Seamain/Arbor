@@ -49,14 +49,10 @@ jobs:
               src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
               src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
 
-          - platform: windows-aarch64
-            os: windows-latest
-            target: aarch64-pc-windows-msvc
-            args: '--target aarch64-pc-windows-msvc --bundles msi,nsis'
-            artifact_name: windows-aarch64
-            artifact_path: |
-              src-tauri/target/aarch64-pc-windows-msvc/release/bundle/msi/*.msi
-              src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.exe
+          # Windows ARM64 is currently excluded: llama-cpp-sys-2 (AI feature
+          # dependency) doesn't configure a clang toolset for this target, and
+          # ggml's CMake build refuses to compile with MSVC on ARM. Re-add
+          # once upstream supports it: https://github.com/utilityai/llama-cpp-rs
 
     steps:
       - name: Checkout
@@ -117,10 +113,21 @@ jobs:
             " "$cfg" "$VERSION"
           done
 
-          # Update Cargo.toml (first [package] version field only)
-          sed -i.bak "0,/^version = \".*\"/{s/^version = \".*\"/version = \"$VERSION\"/}" \
-            src-tauri/Cargo.toml
-          rm -f src-tauri/Cargo.toml.bak
+          # Update Cargo.toml (first [package] version field only).
+          # Uses node instead of sed since macOS ships BSD sed, which doesn't
+          # support the GNU-only `0,/regex/{...}` range-address syntax.
+          node -e "
+            const fs = require('fs');
+            const path = 'src-tauri/Cargo.toml';
+            const text = fs.readFileSync(path, 'utf8');
+            let replaced = false;
+            const updated = text.replace(/^version = \".*\"/m, () => {
+              replaced = true;
+              return 'version = \"' + process.argv[1] + '\"';
+            });
+            if (!replaced) throw new Error('version field not found in Cargo.toml');
+            fs.writeFileSync(path, updated);
+          " "$VERSION"
 
           echo "tauri.conf.json version: $(node -e "console.log(require('./src-tauri/tauri.conf.json').version)")"
           echo "tauri.linux.conf.json version: $(node -e "console.log(require('./src-tauri/tauri.linux.conf.json').version)")"
