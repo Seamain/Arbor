@@ -573,6 +573,11 @@ pub async fn git_get_branches(path: String) -> Result<Vec<String>, String> {
     {
         let (branch, _) = branch.map_err(|e| e.to_string())?;
         if let Some(name) = branch.name().map_err(|e| e.to_string())? {
+            // Skip the remote's symbolic HEAD ref (e.g. "origin/HEAD") — it's
+            // a pointer to the default branch, not a real branch to list.
+            if name == "HEAD" || name.ends_with("/HEAD") {
+                continue;
+            }
             branches.push(format!("  remotes/{}", name));
         }
     }

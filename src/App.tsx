@@ -1150,7 +1150,7 @@ export default function App() {
                           </button>
                           <Dropdown>
                             <Dropdown.Trigger>
-                              <button className="opacity-0 group-hover:opacity-100 absolute right-1 p-0.5 rounded hover:bg-default-200 transition-all" aria-label="Branch Actions">
+                              <button className="opacity-0 group-hover:opacity-100 absolute right-1 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-default-200 transition-all" aria-label="Branch Actions">
                                 <MoreVertical size={13} className="text-default-400" />
                               </button>
                             </Dropdown.Trigger>

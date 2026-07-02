@@ -40,8 +40,14 @@
 
 ## 🖼️ Screenshots / 截图
 
-> Coming soon — screenshots will be added after the first stable release.
-> 截图将在首个稳定版本发布后补充。
+![Main window — commit graph & local changes](docs/screenshots/main-window.png)
+*Commit graph & local changes / 提交图与本地更改*
+
+![Diff viewer](docs/screenshots/diff-viewer.png)
+*Diff viewer / 差异查看器*
+
+![Branch management](docs/screenshots/branch-management.png)
+*Branch management / 分支管理*
 
 ---
 
@@ -90,8 +96,8 @@ chmod +x Arbor_0.1.0_x86_64.AppImage
 
 ### Windows
 
-Run the `.msi` installer and follow the setup wizard.
-双击 `.msi` 安装程序并按向导完成安装。
+Run the `.exe` or `.msi` installer and follow the setup wizard.
+双击 `.exe` 或 `.msi` 安装程序并按向导完成安装。
 
 ---
 
