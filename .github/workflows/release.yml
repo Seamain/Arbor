@@ -11,6 +11,11 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # llama-cpp-sys-2 (via ggml) uses std::filesystem, which Apple's SDK only
+  # backports starting macOS 10.15. Without an explicit deployment target,
+  # clang falls back to a lower default and rejects std::filesystem::path
+  # as "unavailable". Harmless on non-macOS runners.
+  MACOSX_DEPLOYMENT_TARGET: "10.15"
 
 jobs:
   build:
