@@ -87,8 +87,10 @@ export const en = {
   label: "Label",
   personalAccessToken: "Personal Access Token",
   generateToken: "Generate",
-  oauthHint: "Your browser will open to authorize Arbor. No credentials are stored by the app.",
-  oauthWaiting: "Browser opened — complete authorization, then return here…",
+  oauthHint: "Your browser will open with a verification page. Enter the code shown here to authorize Arbor.",
+  oauthWaiting: "Waiting for you to enter the code in your browser…",
+  deviceCodeHint: "Enter this code in your browser:",
+  copyCode: "Copy code",
   signInWith: (provider: string) => `Sign in with ${provider}`,
   waitingForBrowser: "Waiting for browser…",
   verifyAndAdd: "Verify & Add",
@@ -371,6 +373,8 @@ export type Translations = {
   generateToken: string;
   oauthHint: string;
   oauthWaiting: string;
+  deviceCodeHint: string;
+  copyCode: string;
   signInWith: (provider: string) => string;
   waitingForBrowser: string;
   verifyAndAdd: string;

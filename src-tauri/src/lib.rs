@@ -310,7 +310,8 @@ pub fn run() {
             git_ops::open_in_editor,
             git_ops::git_clone,
             git_ops::git_remote_url,
-            oauth::oauth_start
+            oauth::oauth_device_start,
+            oauth::oauth_device_poll
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -3,7 +3,7 @@ import { Modal } from "@heroui/react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Trash2, ExternalLink, Check, RefreshCw,
-  Lock, Globe, KeyRound, Fingerprint,
+  Lock, Globe, KeyRound, Fingerprint, Copy,
 } from "lucide-react";
 import {
   GitProvider, ProviderKind, PROVIDER_META,
@@ -54,6 +54,15 @@ interface OAuthResult {
   name: string;
 }
 
+// ── Device flow info (mirrors Rust DeviceCodeInfo) ────────────────────────────
+interface DeviceCodeInfo {
+  deviceCode: string;
+  userCode: string;
+  verificationUri: string;
+  expiresIn: number;
+  interval: number;
+}
+
 // ── Add account form ──────────────────────────────────────────────────────────
 type AuthMode = "token" | "oauth";
 
@@ -69,6 +78,8 @@ function AddProviderForm({ onAdd }: { onAdd: (p: GitProvider) => void }) {
 
   const [loading,      setLoading]      = useState(false);
   const [oauthWaiting, setOauthWaiting] = useState(false);
+  const [deviceInfo,   setDeviceInfo]   = useState<DeviceCodeInfo | null>(null);
+  const [codeCopied,   setCodeCopied]   = useState(false);
   const [error,        setError]        = useState<string | null>(null);
 
   const meta = PROVIDER_META[kind];
@@ -111,17 +122,27 @@ function AddProviderForm({ onAdd }: { onAdd: (p: GitProvider) => void }) {
     }
   }
 
-  // ── OAuth mode (one-click, PKCE, no credentials needed) ──────────────────
+  // ── OAuth device flow (RFC 8628 — user confirms with a short code) ────────
   async function handleOAuthStart() {
-    setOauthWaiting(true); setError(null);
+    setOauthWaiting(true); setError(null); setDeviceInfo(null); setCodeCopied(false);
+    const resolvedHost = host.trim() || meta.defaultHost;
     try {
-      const result = await invoke<OAuthResult>("oauth_start", {
+      // Step 1: get a device/user code pair; the browser opens automatically.
+      const info = await invoke<DeviceCodeInfo>("oauth_device_start", {
+        args: { kind, host: resolvedHost },
+      });
+      setDeviceInfo(info);
+
+      // Step 2: poll until the user enters the code and approves.
+      const result = await invoke<OAuthResult>("oauth_device_poll", {
         args: {
           kind,
-          host: host.trim() || meta.defaultHost,
+          host:       resolvedHost,
+          deviceCode: info.deviceCode,
+          interval:   info.interval,
+          expiresIn:  info.expiresIn,
         },
       });
-      const resolvedHost = host.trim() || meta.defaultHost;
       const p: GitProvider = {
         id:        `${kind}-${Date.now()}`,
         kind,
@@ -139,6 +160,18 @@ function AddProviderForm({ onAdd }: { onAdd: (p: GitProvider) => void }) {
       setError(String(e).replace("Error: ", ""));
     } finally {
       setOauthWaiting(false);
+      setDeviceInfo(null);
+    }
+  }
+
+  async function handleCopyCode() {
+    if (!deviceInfo) return;
+    try {
+      await navigator.clipboard.writeText(deviceInfo.userCode);
+      setCodeCopied(true);
+      setTimeout(() => setCodeCopied(false), 2000);
+    } catch {
+      // Clipboard may be unavailable; the code is still visible to copy manually.
     }
   }
 
@@ -208,6 +241,29 @@ function AddProviderForm({ onAdd }: { onAdd: (p: GitProvider) => void }) {
           </div>
 
           {error && <div className="provider-error">{error}</div>}
+
+          {deviceInfo && (
+            <div className="provider-device-code">
+              <div className="provider-device-code-hint">{t.deviceCodeHint}</div>
+              <button
+                type="button"
+                className="provider-device-code-value"
+                onClick={handleCopyCode}
+                title={t.copyCode}
+              >
+                <span>{deviceInfo.userCode}</span>
+                {codeCopied ? <Check size={13} /> : <Copy size={13} />}
+              </button>
+              <a
+                href={deviceInfo.verificationUri}
+                target="_blank"
+                rel="noreferrer"
+                className="provider-device-code-link"
+              >
+                <ExternalLink size={11} /> {deviceInfo.verificationUri}
+              </a>
+            </div>
+          )}
 
           {oauthWaiting && (
             <div className="provider-oauth-waiting">
